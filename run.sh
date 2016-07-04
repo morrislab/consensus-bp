@@ -7,6 +7,8 @@ OUTDIR=~/work/exultant-pistachio/data/tmp/breaks/
 cd ~/work/exultant-pistachio/data/cnvs
 
 for W in 1000 5000 10000 20000 50000 100000 300000 1000000; do
+  rm -f $OUTDIR/{un,}directed.$W.{json,stderr,html}
+
   python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/run_comparison.py \
     --window-size $W \
     --optional-methods vanloo_wedge,mustonen095,peifer,dkfz,broad \

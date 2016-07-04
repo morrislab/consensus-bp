@@ -115,8 +115,9 @@ class CnvOrganizer(object):
     return self._cnvs
 
 class BreakpointScorer(object):
-  def __init__(self, cncalls):
+  def __init__(self, cncalls, all_methods):
     self._cncalls = self._combine_cnvs(cncalls)
+    self._all_methods = all_methods
 
   def _combine_cnvs(self, cncalls):
     all_chroms = set([C for L in cncalls.values() for C in L.keys()])
@@ -133,7 +134,10 @@ class BreakpointScorer(object):
     return all_cnvs
 
   def score(self, window=5000, directed=True):
-    method_scores = defaultdict(lambda: defaultdict(int))
+    # method_scores[method][group][score]
+    # method \in { broad, dkfz, mustonen095, peifer, vanloo_wedge }
+    # group  \in { broad, dkfz, mustonen095, peifer, vanloo_wedge }
+    method_scores = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     Position = namedtuple('Position', ('pos', 'postype', 'method'))
 
     for chrom, chrom_cnvs in self._cncalls.items():
@@ -169,7 +173,18 @@ class BreakpointScorer(object):
 
       for pos, supporting_methods in support.items():
         S = len(supporting_methods)
-        method_scores[pos.method][S] += 1
+        assert pos.method in supporting_methods
+
+        if S == 2 and len(self._all_methods) == 5:
+          group = supporting_methods - set([pos.method])
+        elif S == 4 and len(self._all_methods) == 5:
+          group = self._all_methods - supporting_methods
+        else:
+          group = set(['indeterminate'])
+
+        assert len(group) == 1
+        group = group.pop()
+        method_scores[pos.method][group][S] += 1
 
     return method_scores
 
@@ -215,13 +230,15 @@ def main():
 
   cn_calls, avail_methods = load_cn_calls(args.cnv_files)
   consensus_methods = (required_methods | optional_methods) & avail_methods
+  # Ensure we have no extraneous methods.
+  assert consensus_methods == avail_methods
 
   assert avail_methods.issuperset(required_methods) and len(consensus_methods) >= args.num_needed_methods
 
   for method, cnvs in cn_calls.items():
     cn_calls[method] = CnvOrganizer(cnvs).organize()
-  bs = BreakpointScorer(cn_calls)
 
+  bs = BreakpointScorer(cn_calls, consensus_methods)
   scores = bs.score(window=args.window_size, directed=args.directed)
 
   print(json.dumps({

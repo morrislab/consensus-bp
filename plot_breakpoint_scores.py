@@ -7,21 +7,28 @@ import plotly.tools as pltools
 import plotly.plotly as py
 import plotly.graph_objs as go
 
-def plot(scores, method_counts, title):
-  methods = sorted(scores.keys())
+def plot(scores, tumor_counts, title):
   bars = []
-  N = len(methods)
+  N = len(scores.keys())
   titles = []
 
-  for method in methods:
-    xvals = sorted(scores[method].keys())
-    yvals = [scores[method][S] for S in xvals]
+  for method in sorted(scores.keys()):
+    method_bars = []
+    summed = 0
 
-    bars.append(go.Bar(
-      x = xvals,
-      y = yvals,
-    ))
-    titles.append('%s (%s tumors, %e breakpoints)' % (method, method_counts[method], sum(yvals)))
+    for group in sorted(scores[method].keys()):
+      xvals = sorted(scores[method][group].keys())
+      yvals = [scores[method][group][S] for S in xvals]
+      summed += sum(yvals)
+
+      method_bars.append(go.Bar(
+        x = xvals,
+        y = yvals,
+        name = group,
+      ))
+
+    bars.append(method_bars)
+    titles.append('%s (%s tumors, %e breakpoints)' % (method, tumor_counts[method], summed))
 
   print(titles)
   fig = pltools.make_subplots(
@@ -30,32 +37,36 @@ def plot(scores, method_counts, title):
     subplot_titles=titles,
     #shared_yaxes=True,
   )
-  for idx, bar in enumerate(bars):
-    fig.append_trace(bar, 1, idx + 1)
+  for idx, method_bars in enumerate(bars):
+    for group_bar in method_bars:
+      fig.append_trace(group_bar, 1, idx + 1)
 
-  fig['layout'].update(width = N*400, height=400, title=title)
+  fig['layout'].update(width = N*500, height=400, title=title, barmode='stack')
   for idx in range(N):
-    fig['layout']['yaxis%s' % (idx + 1)].update(type='log')
+    #fig['layout']['yaxis%s' % (idx + 1)].update(type='log')
+    pass
 
   plotly.offline.plot(fig, filename='%s.html' % title)
 
 def combine_scores():
-  combined_scores = defaultdict(lambda: defaultdict(int))
-  method_counts = defaultdict(int)
+  # combined_scores[method][group][score]
+  combined_scores = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+  tumor_counts = defaultdict(int)
 
   for line in sys.stdin:
     parsed = json.loads(line.strip())
-    for method, scores in parsed['scores'].items():
-      method_counts[method] += 1
-      for score, count in scores.items():
-        combined_scores[method][int(score)] += count
+    for method in parsed['scores'].keys():
+      tumor_counts[method] += 1
+      for group in parsed['scores'][method].keys():
+        for score, count in parsed['scores'][method][group].items():
+          combined_scores[method][group][int(score)] += count
 
-  return (combined_scores, method_counts)
+  return (combined_scores, tumor_counts)
 
 def main():
-  scores, method_counts = combine_scores()
+  scores, tumor_counts = combine_scores()
   title = sys.argv[1]
-  plot(scores, method_counts, title)
+  plot(scores, tumor_counts, title)
 
 if __name__ == '__main__':
   main()
