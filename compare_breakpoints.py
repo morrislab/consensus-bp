@@ -4,6 +4,8 @@ import csv
 from collections import defaultdict, namedtuple
 import json
 import sys
+import gzip
+import re
 
 class CnvFileParser(object):
   def load(self, filename):
@@ -114,10 +116,19 @@ class CnvOrganizer(object):
   def organize(self):
     return self._cnvs
 
+Position = namedtuple('Position', ('chrom', 'pos', 'postype', 'method'))
+StructVar = namedtuple('StructVar', ('chrom', 'pos', 'svclass'))
+
 class BreakpointScorer(object):
-  def __init__(self, cncalls, all_methods):
+  def __init__(self, cncalls, sv_filename, all_methods, window=5000, directed=True):
     self._cncalls = self._combine_cnvs(cncalls)
     self._all_methods = all_methods
+    self._sv = self._load_sv(sv_filename)
+    self._sv_class_counts = self._calc_sv_class_counts()
+
+    self._window = window
+    self._directed = directed
+    self._bp_mutual_scores, self._bp_mutual_scores_by_method = self._calc_breakpoint_mutual_scores()
 
   def _combine_cnvs(self, cncalls):
     all_chroms = set([C for L in cncalls.values() for C in L.keys()])
@@ -133,23 +144,53 @@ class BreakpointScorer(object):
 
     return all_cnvs
 
-  def score(self, window=5000, directed=True):
+  def _load_sv(self, sv_filename):
+    sv = defaultdict(list)
+
+    with gzip.open(sv_filename) as svf:
+      for line in svf:
+        line = line.strip()
+        if line.startswith('#'):
+          continue
+        fields = line.split('\t')
+        chrom, pos, filter, info = fields[0].upper(), int(fields[1]), fields[6], fields[7]
+        assert fields[6] == 'PASS'
+        svclass = re.compile('SVCLASS=([^;]+)').findall(info)[0]
+        sv[chrom].append(StructVar(chrom=chrom, pos=pos, svclass=svclass))
+
+    return sv
+
+  def _calc_sv_class_counts(self):
+    sv_class_counts = defaultdict(int)
+    for chrom in self._sv.keys():
+      for sv in self._sv[chrom]:
+        sv_class_counts[sv.svclass] += 1
+    return sv_class_counts
+
+  def _extract_pos(self, chrom, cnvs):
+    positions = {
+      'start': [Position(chrom=chrom, pos=C['start'], postype='start', method=C['method']) for C in cnvs],
+      'end': [Position(chrom=chrom, pos=C['end'], postype='end', method=C['method']) for C in cnvs],
+    }
+    positions['all'] = positions['start'] + positions['end']
+    return positions
+
+  def score_breakpoints(self):
+    return self._bp_mutual_scores_by_method
+
+  def _calc_breakpoint_mutual_scores(self):
     # method_scores[method][group][score]
     # method \in { broad, dkfz, mustonen095, peifer, vanloo_wedge }
-    # group  \in { broad, dkfz, mustonen095, peifer, vanloo_wedge }
-    method_scores = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-    Position = namedtuple('Position', ('pos', 'postype', 'method'))
+    # group  \in { broad, dkfz, mustonen095, peifer, vanloo_wedge, indeterminate }
+    bp_scores_by_method = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    bp_scores = {}
 
     for chrom, chrom_cnvs in self._cncalls.items():
-      positions = {
-        'start': [Position(pos=C['start'], postype='start', method=C['method']) for C in chrom_cnvs],
-        'end': [Position(pos=C['end'], postype='end', method=C['method']) for C in chrom_cnvs],
-      }
-      positions['all'] = positions['start'] + positions['end']
+      positions = self._extract_pos(chrom, chrom_cnvs)
       for postype, pos in positions.items():
         positions[postype] = sorted(pos, key = lambda P: P.pos)
 
-      if directed:
+      if self._directed:
         keys = ('start', 'end')
       else:
         keys = ('all',)
@@ -166,7 +207,7 @@ class BreakpointScorer(object):
           open_pos.add(pos)
           for P in open_pos:
             assert pos.pos >= P.pos
-          open_pos = set([P for P in open_pos if pos.pos - P.pos <= window])
+          open_pos = set([P for P in open_pos if pos.pos - P.pos <= self._window])
           #print(json.dumps((pos, list(open_pos))))
           for P in open_pos:
             support[P].add(pos.method)
@@ -174,6 +215,9 @@ class BreakpointScorer(object):
       for pos, supporting_methods in support.items():
         S = len(supporting_methods)
         assert pos.method in supporting_methods
+
+        assert pos not in bp_scores
+        bp_scores[pos] = S
 
         if S == 2 and len(self._all_methods) == 5:
           group = supporting_methods - set([pos.method])
@@ -184,9 +228,49 @@ class BreakpointScorer(object):
 
         assert len(group) == 1
         group = group.pop()
-        method_scores[pos.method][group][S] += 1
+        bp_scores_by_method[pos.method][group][S] += 1
 
-    return method_scores
+    return (bp_scores, bp_scores_by_method)
+
+  def _find_closest_sv(self, bp, chrom, window):
+    closest_dist = float('inf')
+    closest_sv = None
+
+    for sv in self._sv[chrom]:
+      dist = abs(bp.pos - sv.pos)
+      if dist < closest_dist and dist <= window:
+        closest_sv = sv
+        closest_dist = dist
+
+    return closest_sv
+
+  def score_sv(self, required_score=0):
+    bp_sv_scores = defaultdict(lambda: defaultdict(int))
+    sv_bp_scores = defaultdict(lambda: defaultdict(lambda:  {True: 0, False: 0}))
+
+    for chrom, chrom_cnvs in self._cncalls.items():
+      cnv_bp = self._extract_pos(chrom, chrom_cnvs)
+      for bp in cnv_bp['all']:
+        if self._bp_mutual_scores[bp] < required_score:
+          continue
+        closest_sv = self._find_closest_sv(bp, chrom, self._window)
+        if closest_sv is not None:
+          bp_sv_scores[bp.method][closest_sv.svclass] += 1
+        else:
+          bp_sv_scores[bp.method][None] += 1
+
+    for chrom in self._sv.keys():
+      cnv_bp = self._extract_pos(chrom, self._cncalls[chrom])
+      for sv in self._sv[chrom]:
+        supported_methods = set([
+          bp.method for bp in cnv_bp['all'] \
+          if abs(bp.pos - sv.pos) <= self._window \
+          and self._bp_mutual_scores[bp] >= required_score
+        ])
+        for method in self._all_methods:
+          sv_bp_scores[method][sv.svclass][method in supported_methods] += 1
+
+    return (bp_sv_scores, sv_bp_scores)
 
 def load_cn_calls(cnv_files):
   cn_calls = {}
@@ -214,6 +298,7 @@ def main():
   parser.add_argument('--undirected', dest='directed', action='store_false',
     help='Whether we should treat breakpoints as directed (i.e., "start" distinct from "end")')
   parser.add_argument('dataset_name', help='Dataset name')
+  parser.add_argument('sv_filename', help='Consensus structural variants filename (VCF format)')
   parser.add_argument('cnv_files', nargs='+', help='CNV files')
   args = parser.parse_args()
 
@@ -238,12 +323,17 @@ def main():
   for method, cnvs in cn_calls.items():
     cn_calls[method] = CnvOrganizer(cnvs).organize()
 
-  bs = BreakpointScorer(cn_calls, consensus_methods)
-  scores = bs.score(window=args.window_size, directed=args.directed)
+  bs = BreakpointScorer(cn_calls, args.sv_filename, consensus_methods, window=args.window_size, directed=args.directed)
+  bp_mutual_scores = bs.score_breakpoints()
+  bp_sv_scores, sv_bp_scores = bs.score_sv(required_score=4)
 
   print(json.dumps({
     'dataset': args.dataset_name,
-    'scores': scores,
+    'bp_mutual_scores': bp_mutual_scores,
+    # Number of CNV breakpoints each SV is supported by.
+    'sv_bp_scores': sv_bp_scores,
+    # Number of SVs each CNV breakpoint is supported by.
+    'bp_sv_scores': bp_sv_scores,
   }))
   return
 

@@ -1,6 +1,8 @@
 import argparse
 import glob
+import os
 from collections import defaultdict
+import glob
 
 def main():
   parser = argparse.ArgumentParser(
@@ -17,6 +19,7 @@ def main():
     help='Window within which breakpoints must be placed to be considered equivalent')
   parser.add_argument('--undirected', dest='directed', action='store_false',
     help='Whether we should treat breakpoints as directed (i.e., "start" distinct from "end")')
+  parser.add_argument('sv_dir', help='Directory containing SVs in VCF format')
   parser.add_argument('method', nargs='+', help='Methods whose CNV calls you wish to use')
   args = parser.parse_args()
 
@@ -50,7 +53,11 @@ def main():
       cmd += ' --undirected'
     cmd += '  --num-needed-methods %s' % args.num_needed_methods
     cmd += '  --window-size %s' % args.window_size
-    cmd += ' %s %s' % (guid, cnv_calls)
+
+    sv_path = glob.glob(os.path.join(args.sv_dir, '%s.*.sv.vcf.gz' % guid))
+    if len(sv_path) != 1:
+      continue
+    cmd += ' %s %s %s' % (guid, sv_path[0], cnv_calls)
 
     try:
       print(cmd)
