@@ -141,8 +141,8 @@ def plot_bp_vs_well_supported_bp(bp_vs_wsbp, title, log_axes=False):
 
   for idx in range(N):
     fig.append_trace(traces[idx], 1, idx + 1)
-    fig['layout']['xaxis%s' % (idx + 1)].update(title='Total breakpoints')
-    fig['layout']['yaxis%s' % (idx + 1)].update(title='Well-supported breakpoints')
+    fig['layout']['xaxis%s' % (idx + 1)].update(title='Total breakpoints', range=(0, 2000))
+    fig['layout']['yaxis%s' % (idx + 1)].update(title='Well-supported breakpoints', range=(0, 600))
     if log_axes:
       for axis in ('xaxis', 'yaxis'):
         fig['layout']['%s%s' % (axis, idx + 1)].update(type='log')
@@ -180,6 +180,18 @@ def combine_scores(bpfn):
           for is_proximal_bp in parsed['sv_bp_scores'][method][svclass].keys():
             count = parsed['sv_bp_scores'][method][svclass][is_proximal_bp]
             sv_bp_scores[method][svclass][is_proximal_bp] += count
+
+  # Print stats.
+  for method in bp_sv_scores.keys():
+    total = sum(bp_sv_scores[method].values())
+    print('bp_sv_scores', method, bp_sv_scores[method]['null'] / float(total))
+  for method in sv_bp_scores.keys():
+    has_proximal = 0
+    total = 0
+    for svclass in sv_bp_scores[method].keys():
+      has_proximal += sv_bp_scores[method][svclass]['True']
+      total += sum(sv_bp_scores[method][svclass].values())
+    print('sv_bp_scores', method, has_proximal / float(total))
 
   return (bp_mutual_scores, bp_sv_scores, sv_bp_scores, tumor_counts)
 

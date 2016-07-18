@@ -5,7 +5,6 @@ from collections import defaultdict, namedtuple
 import json
 import sys
 import gzip
-import re
 
 class CnvFileParser(object):
   def load(self, filename):
@@ -153,9 +152,28 @@ class BreakpointScorer(object):
         if line.startswith('#'):
           continue
         fields = line.split('\t')
-        chrom, pos, filter, info = fields[0].upper(), int(fields[1]), fields[6], fields[7]
+        chrom, pos, filter, info_raw = fields[0].upper(), int(fields[1]), fields[6], fields[7]
         assert fields[6] == 'PASS'
-        svclass = re.compile('SVCLASS=([^;]+)').findall(info)[0]
+
+        info = {}
+        for tokens in info_raw.split(';'):
+          if '=' in tokens:
+            K, V = tokens.split('=', 1)
+          else:
+            K, V = tokens, None
+          info[K] = V
+
+        svclass = info['SVCLASS']
+        if 'BKDIST' in info:
+          bkdist = int(info['BKDIST'])
+        else:
+          # -1 signifies translocation, so we use -2 to indicate missing data.
+          bkdist = -2
+
+        min_sv_size = 10000
+        if bkdist < min_sv_size:
+          continue
+
         sv[chrom].append(StructVar(chrom=chrom, pos=pos, svclass=svclass))
 
     return sv

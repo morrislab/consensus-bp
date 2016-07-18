@@ -4,6 +4,10 @@ import os
 from collections import defaultdict
 import glob
 
+def load_blacklist(blacklistfn):
+  with open(blacklistfn) as blist:
+    return set([l.strip() for l in blist.readlines()])
+
 def main():
   parser = argparse.ArgumentParser(
     description='LOL HI',
@@ -19,11 +23,14 @@ def main():
     help='Window within which breakpoints must be placed to be considered equivalent')
   parser.add_argument('--undirected', dest='directed', action='store_false',
     help='Whether we should treat breakpoints as directed (i.e., "start" distinct from "end")')
+  parser.add_argument('--blacklist', dest='blacklist',
+    help='List of blacklisted tumor samples')
   parser.add_argument('sv_dir', help='Directory containing SVs in VCF format')
   parser.add_argument('method', nargs='+', help='Methods whose CNV calls you wish to use')
   args = parser.parse_args()
 
   segfiles_by_guid = defaultdict(list)
+  blacklist = load_blacklist(args.blacklist)
 
   for method in args.method:
     if method.endswith('/'):
@@ -40,6 +47,9 @@ def main():
     if cnt > 5 and False:
       break
 
+    if guid in blacklist:
+      continue
+
     if len(methods_for_guid) <= args.num_needed_methods:
       continue
     cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in methods_for_guid])
@@ -51,8 +61,8 @@ def main():
       cmd += ' --optional-methods %s' % args.optional_methods
     if not args.directed:
       cmd += ' --undirected'
-    cmd += '  --num-needed-methods %s' % args.num_needed_methods
-    cmd += '  --window-size %s' % args.window_size
+    cmd += ' --num-needed-methods %s' % args.num_needed_methods
+    cmd += ' --window-size %s' % args.window_size
 
     sv_path = glob.glob(os.path.join(args.sv_dir, '%s.*.sv.vcf.gz' % guid))
     if len(sv_path) != 1:
