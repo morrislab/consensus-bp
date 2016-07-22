@@ -118,35 +118,14 @@ class CnvOrganizer(object):
 Position = namedtuple('Position', ('chrom', 'pos', 'postype', 'method'))
 StructVar = namedtuple('StructVar', ('chrom', 'pos', 'svclass'))
 
-class BreakpointScorer(object):
-  def __init__(self, cncalls, sv_filename, all_methods, window=5000, directed=True):
-    self._cncalls = self._combine_cnvs(cncalls)
-    self._all_methods = all_methods
-    self._sv = self._load_sv(sv_filename)
-    self._sv_class_counts = self._calc_sv_class_counts()
+class StructVarParser(object):
+  def __init__(self, sv_filename):
+    self._sv_filename = sv_filename
 
-    self._window = window
-    self._directed = directed
-    self._bp_mutual_scores, self._bp_mutual_scores_by_method = self._calc_breakpoint_mutual_scores()
-
-  def _combine_cnvs(self, cncalls):
-    all_chroms = set([C for L in cncalls.values() for C in L.keys()])
-    all_cnvs = defaultdict(list)
-
-    for chrom in all_chroms:
-      chrom_cnvs = []
-      for method in cncalls.keys():
-        for cnv in cncalls[method][chrom]:
-          cnv = dict(cnv) # Copy object before modifying
-          cnv['method'] = method
-          all_cnvs[chrom].append(cnv)
-
-    return all_cnvs
-
-  def _load_sv(self, sv_filename):
+  def parse(self):
     sv = defaultdict(list)
 
-    with gzip.open(sv_filename) as svf:
+    with gzip.open(self._sv_filename) as svf:
       for line in svf:
         line = line.strip()
         if line.startswith('#'):
@@ -177,6 +156,31 @@ class BreakpointScorer(object):
         sv[chrom].append(StructVar(chrom=chrom, pos=pos, svclass=svclass))
 
     return sv
+
+class BreakpointScorer(object):
+  def __init__(self, cncalls, sv_filename, all_methods, window=5000, directed=True):
+    self._cncalls = self._combine_cnvs(cncalls)
+    self._all_methods = all_methods
+    self._sv = StructVarParser(sv_filename).parse()
+    self._sv_class_counts = self._calc_sv_class_counts()
+
+    self._window = window
+    self._directed = directed
+    self._bp_mutual_scores, self._bp_mutual_scores_by_method = self._calc_breakpoint_mutual_scores()
+
+  def _combine_cnvs(self, cncalls):
+    all_chroms = set([C for L in cncalls.values() for C in L.keys()])
+    all_cnvs = defaultdict(list)
+
+    for chrom in all_chroms:
+      chrom_cnvs = []
+      for method in cncalls.keys():
+        for cnv in cncalls[method][chrom]:
+          cnv = dict(cnv) # Copy object before modifying
+          cnv['method'] = method
+          all_cnvs[chrom].append(cnv)
+
+    return all_cnvs
 
   def _calc_sv_class_counts(self):
     sv_class_counts = defaultdict(int)
@@ -250,11 +254,11 @@ class BreakpointScorer(object):
 
     return (bp_scores, bp_scores_by_method)
 
-  def _find_closest_sv(self, bp, chrom, window):
+  def _find_closest_sv(self, bp, window):
     closest_dist = float('inf')
     closest_sv = None
 
-    for sv in self._sv[chrom]:
+    for sv in self._sv[bp.chrom]:
       dist = abs(bp.pos - sv.pos)
       if dist < closest_dist and dist <= window:
         closest_sv = sv
@@ -271,7 +275,7 @@ class BreakpointScorer(object):
       for bp in cnv_bp['all']:
         if self._bp_mutual_scores[bp] < required_score:
           continue
-        closest_sv = self._find_closest_sv(bp, chrom, self._window)
+        closest_sv = self._find_closest_sv(bp, self._window)
         if closest_sv is not None:
           bp_sv_scores[bp.method][closest_sv.svclass] += 1
         else:
