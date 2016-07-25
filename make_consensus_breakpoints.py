@@ -3,10 +3,12 @@ import argparse
 import csv
 import gzip
 import sys
+import json
 from collections import defaultdict, namedtuple
 
 Position = namedtuple('Position', ('chrom', 'pos', 'postype', 'method'))
 StructVar = namedtuple('StructVar', ('chrom', 'pos', 'svclass'))
+MissingExemplarInterval = namedtuple('MissingExemplarInterval', ('chrom', 'start_idx', 'end_idx', 'expected_postype'))
 
 class CnvFileParser(object):
   def load(self, filename):
@@ -163,6 +165,20 @@ class ConsensusMaker(object):
 
     cncalls = self._combine_cnvs(cncalls)
     self._directed_positions = self._extract_pos(cncalls)
+    self._directed_position_indices = self._index_pos(self._directed_positions)
+
+  def _index_pos(self, positions):
+    indices = {}
+    total_pos = 0
+
+    for chrom in positions.keys():
+      pos = positions[chrom]
+      indices.update({ P: idx for (idx, P) in enumerate(pos) })
+      total_pos += len(pos)
+
+    # Ensure no duplicate positions.
+    assert len(indices) == total_pos
+    return indices
 
   def _combine_cnvs(self, cncalls):
     all_chroms = set([C for L in cncalls.values() for C in L.keys()])
@@ -180,37 +196,49 @@ class ConsensusMaker(object):
 
   def _extract_pos(self, cnvs):
     positions = {}
-
-    def _extract_for_chrom(chrom, postype):
-      pos = [Position(chrom=chrom, pos=C[postype], postype=postype, method=C['method']) for C in cnvs[chrom]]
-      return sorted(pos, key = lambda P: P.pos)
+    total_cnvs = 0
 
     for chrom in cnvs.keys():
-        positions[chrom] = {
-          'start': _extract_for_chrom(chrom, 'start'),
-          'end':   _extract_for_chrom(chrom, 'end'),
-        }
+      total_cnvs += len(cnvs[chrom])
+      pos = [
+        Position(chrom=chrom, pos=C[postype], postype=postype, method=C['method'])
+        for C in cnvs[chrom]
+        for postype in ('start', 'end')
+      ]
+      # True > False, so "P.postype == 'end'" will place ends after starts if
+      # they've both at same coordinate.
+      positions[chrom] = sorted(pos, key = lambda P: (P.pos, P.postype == 'end', P.method))
 
+    assert sum([len(P) for P in positions.values()]) == 2*total_cnvs
     return positions
 
-  def _find_clusters(self, positions):
+  def _find_clusters(self, chrom, postype, support_threshold, start_idx=None, end_idx=None):
+    positions = self._directed_positions[chrom]
+
+    if start_idx is None:
+      start_idx = 0
+    if end_idx is None:
+      end_idx = len(positions)
+    assert 0 <= start_idx < end_idx <= len(positions)
+
     # Ensure no duplicates.
     assert len(positions) == len(set(positions))
-    prev_pos = set()
+    prev_pos = []
 
-    N = len(positions)
-    idx = 0
-
-    while idx < N:
+    idx = start_idx
+    while idx < end_idx:
       pos = positions[idx]
+      if pos.postype != postype:
+        idx += 1
+        continue
 
-      prev_pos.add(pos)
+      prev_pos.append(pos)
       for P in prev_pos:
         assert pos.pos >= P.pos
-      prev_pos = set([P for P in prev_pos if pos.pos - P.pos <= self._window])
+      prev_pos = [P for P in prev_pos if pos.pos - P.pos <= self._window]
       supporting_methods = set([P.method for P in prev_pos])
 
-      if len(supporting_methods) < self._support_threshold:
+      if len(supporting_methods) < support_threshold:
         idx += 1
         continue
 
@@ -218,15 +246,22 @@ class ConsensusMaker(object):
       # all breakpoints preceding it within the window will be in prev_pos.
       # Now, we must find the following positions, which we store in next_pos.
       nidx = idx + 1
-      next_pos = set()
-      while nidx < N and positions[nidx].pos - positions[idx].pos <= self._window:
-        next_pos.add(positions[nidx])
+      remaining_window = pos.pos - prev_pos[0].pos
+      assert 0 <= remaining_window <= self._window
+      next_pos = []
+      while nidx < end_idx and positions[nidx].pos - pos.pos <= remaining_window:
+        assert positions[nidx].pos >= pos.pos
+        if positions[nidx].postype == postype:
+          next_pos.append(positions[nidx])
         nidx += 1
 
-      cluster = prev_pos | next_pos
+      cluster = prev_pos + next_pos
       cluster = sorted(cluster, key = lambda P: (P.pos, P.method))
+      # Ensure no duplicates.
+      assert len(cluster) == len(set(cluster))
       yield cluster
       idx = nidx
+      prev_pos = []
 
   def _get_median(self, L):
     # Assumes L is sorted already, since sorting criterion you desire may vary
@@ -245,32 +280,75 @@ class ConsensusMaker(object):
     for method in partitioned.keys():
       medians.add(self._get_median(partitioned[method]))
 
-    return sorted(medians, key = lambda P: P.pos)
+    return sorted(medians, key = lambda P: (P.pos, P.method))
 
   def _balance_segments(self, exemplars):
     # Fix positions so we have no unopened ends or unclosed starts.
+    bad_exemplars = set()
+
     for chrom in exemplars.keys():
-      # First position on each chrom should be a "start", so tell the algorithm
-      # we were expecting an end before (even though none will exist).
-      last_postype = 'end'
-      for exemplar in exemplars[chrom]:
+      first_exemplar, last_exemplar = exemplars[chrom][0], exemplars[chrom][-1]
+      if first_exemplar.postype != 'start':
+        bad_exemplars.add(MissingExemplarInterval(
+          chrom = chrom,
+          start_idx = None,
+          end_idx = self._directed_position_indices[first_exemplar],
+          expected_postype = 'start'
+        ))
+
+      if last_exemplar.postype != 'end':
+        bad_exemplars.add(MissingExemplarInterval(
+          chrom = chrom,
+          start_idx = self._directed_position_indices[last_exemplar] + 1,
+          end_idx = None,
+          expected_postype = 'end'
+        ))
+
+      last_postype = first_exemplar.postype
+      last_idx = self._directed_position_indices[first_exemplar]
+      for exemplar in exemplars[chrom][1:-1]:
         expected_postype = (last_postype == 'start' and 'end' or 'start')
         if exemplar.postype != expected_postype:
-          print(exemplar)
+          bad_exemplars.add(MissingExemplarInterval(
+            chrom = chrom,
+            start_idx = last_idx + 1,
+            end_idx = self._directed_position_indices[exemplar],
+            expected_postype = expected_postype
+          ))
         last_postype = exemplar.postype
+        last_idx = self._directed_position_indices[exemplar]
+
+    for bad_exemplar in bad_exemplars:
+      for reduced_support_threshold in reversed(range(1, self._support_threshold + 1)):
+        balancing_clusters = list(self._find_clusters(
+          bad_exemplar.chrom,
+          bad_exemplar.expected_postype,
+          reduced_support_threshold,
+          bad_exemplar.start_idx,
+          bad_exemplar.end_idx
+        ))
+        print(json.dumps([bad_exemplar, reduced_support_threshold, balancing_clusters]))
 
   def make_consensus(self):
     self._exemplars = defaultdict(list)
+    self._directed_clusters = {}
 
     for chrom in self._directed_positions.keys():
       for postype in ('start', 'end'):
-        for cluster in self._find_clusters(self._directed_positions[chrom][postype]):
+        for cluster in self._find_clusters(chrom, postype, self._support_threshold):
           method_medians = self._find_method_medians(cluster)
-          self._exemplars[chrom].append(self._get_median(method_medians))
+          exemplar = self._get_median(method_medians)
+          self._exemplars[chrom].append(exemplar)
+          self._directed_clusters[exemplar] = cluster
+
       # The list currently consists of all the start points, followed by all
       # the endpoints. We want to sort by position so we can figure out when we
       # have unclosed starts and unopened ends.
       self._exemplars[chrom] = sorted(self._exemplars[chrom], key = lambda P: P.pos)
+
+      # Remove chromosomes with no breakpoints.
+      if len(self._exemplars[chrom]) == 0:
+        del self._exemplars[chrom]
 
     self._balance_segments(self._exemplars)
 
