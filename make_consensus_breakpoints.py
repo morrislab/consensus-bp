@@ -194,23 +194,36 @@ class ConsensusMaker(object):
 
     return all_cnvs
 
+  def _sort_pos(self, positions):
+    for chrom in positions.keys():
+      # True > False, so "P.postype == 'start'" will place starts after ends if
+      # they've both at same coordinate.
+      positions[chrom].sort(key = lambda P: (P.pos, P.postype == 'start', P.method))
+
   def _extract_pos(self, cnvs):
     positions = {}
     total_cnvs = 0
 
     for chrom in cnvs.keys():
       total_cnvs += len(cnvs[chrom])
-      pos = [
+      positions[chrom] = [
         Position(chrom=chrom, pos=C[postype], postype=postype, method=C['method'])
         for C in cnvs[chrom]
         for postype in ('start', 'end')
       ]
-      # True > False, so "P.postype == 'end'" will place ends after starts if
-      # they've both at same coordinate.
-      positions[chrom] = sorted(pos, key = lambda P: (P.pos, P.postype == 'end', P.method))
+    self._sort_pos(positions)
 
     assert sum([len(P) for P in positions.values()]) == 2*total_cnvs
     return positions
+
+  def _should_use_bp(self, pos, postype):
+    if pos.postype != postype:
+      #print('  wrong postype')
+      return False
+    if pos in self._used_bps:
+      #print('  already used', [P.method for P in self._used_bps[pos]])
+      return False
+    return True
 
   def _find_clusters(self, chrom, postype, support_threshold, start_idx=None, end_idx=None):
     positions = self._directed_positions[chrom]
@@ -220,6 +233,7 @@ class ConsensusMaker(object):
     if end_idx is None:
       end_idx = len(positions)
     assert 0 <= start_idx < end_idx <= len(positions)
+    print('Searching', chrom, positions[start_idx], positions[end_idx - 1], postype, support_threshold)
 
     # Ensure no duplicates.
     assert len(positions) == len(set(positions))
@@ -228,7 +242,8 @@ class ConsensusMaker(object):
     idx = start_idx
     while idx < end_idx:
       pos = positions[idx]
-      if pos.postype != postype:
+      #print('Considering', pos)
+      if not self._should_use_bp(pos, postype):
         idx += 1
         continue
 
@@ -239,6 +254,7 @@ class ConsensusMaker(object):
       supporting_methods = set([P.method for P in prev_pos])
 
       if len(supporting_methods) < support_threshold:
+        #print('  too little support')
         idx += 1
         continue
 
@@ -251,7 +267,7 @@ class ConsensusMaker(object):
       next_pos = []
       while nidx < end_idx and positions[nidx].pos - pos.pos <= remaining_window:
         assert positions[nidx].pos >= pos.pos
-        if positions[nidx].postype == postype:
+        if self._should_use_bp(positions[nidx], postype):
           next_pos.append(positions[nidx])
         nidx += 1
 
@@ -327,19 +343,46 @@ class ConsensusMaker(object):
           bad_exemplar.start_idx,
           bad_exemplar.end_idx
         ))
-        print(json.dumps([bad_exemplar, reduced_support_threshold, balancing_clusters]))
+        if len(balancing_clusters) > 0:
+          #print(json.dumps([bad_exemplar, reduced_support_threshold, balancing_clusters]))
+          for cluster in balancing_clusters:
+            yield cluster
+          break
+      else:
+        raise Exception('No balancing cluster found for %s' % bad_exemplar)
+
+  def _draw_exemplar_from_cluster(self, cluster):
+    method_medians = self._find_method_medians(cluster)
+    for member in method_medians:
+      self._used_bps[member] = method_medians
+    exemplar = self._get_median(method_medians)
+    chrom = exemplar.chrom
+    self._exemplars[chrom].append(exemplar)
+    print('Adding', exemplar)
+
+  def _check_sanity(self):
+    for chrom in self._exemplars.keys():
+      exemplars = self._exemplars[chrom]
+      assert len(exemplars) % 2 == 0
+      assert exemplars[0].postype == 'start'
+      assert exemplars[-1].postype == 'end'
+
+      for idx, exemplar in enumerate(exemplars):
+        print(idx, exemplar)
+
+      expected_postype = 'end'
+      for idx in range(1, len(exemplars) - 1):
+        assert exemplars[idx].postype == expected_postype
+        expected_postype = (expected_postype == 'start' and 'end' or 'start')
 
   def make_consensus(self):
     self._exemplars = defaultdict(list)
-    self._directed_clusters = {}
+    self._used_bps = {}
 
     for chrom in self._directed_positions.keys():
       for postype in ('start', 'end'):
         for cluster in self._find_clusters(chrom, postype, self._support_threshold):
-          method_medians = self._find_method_medians(cluster)
-          exemplar = self._get_median(method_medians)
-          self._exemplars[chrom].append(exemplar)
-          self._directed_clusters[exemplar] = cluster
+          self._draw_exemplar_from_cluster(cluster)
 
       # The list currently consists of all the start points, followed by all
       # the endpoints. We want to sort by position so we can figure out when we
@@ -350,7 +393,13 @@ class ConsensusMaker(object):
       if len(self._exemplars[chrom]) == 0:
         del self._exemplars[chrom]
 
-    self._balance_segments(self._exemplars)
+    for cluster in self._balance_segments(self._exemplars):
+      chrom = cluster[0].chrom
+      self._draw_exemplar_from_cluster(cluster)
+      #print(cluster)
+
+    self._sort_pos(self._exemplars)
+    self._check_sanity()
 
 def load_cn_calls(cnv_files):
   cn_calls = {}
