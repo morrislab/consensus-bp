@@ -218,10 +218,8 @@ class ConsensusMaker(object):
 
   def _should_use_bp(self, pos, postype):
     if pos.postype != postype:
-      #print('  wrong postype')
       return False
     if pos in self._used_bps:
-      #print('  already used', [P.method for P in self._used_bps[pos]])
       return False
     return True
 
@@ -233,7 +231,6 @@ class ConsensusMaker(object):
     if end_idx is None:
       end_idx = len(positions)
     assert 0 <= start_idx < end_idx <= len(positions)
-    print('Searching', chrom, positions[start_idx], positions[end_idx - 1], postype, support_threshold)
 
     # Ensure no duplicates.
     assert len(positions) == len(set(positions))
@@ -242,7 +239,6 @@ class ConsensusMaker(object):
     idx = start_idx
     while idx < end_idx:
       pos = positions[idx]
-      #print('Considering', pos)
       if not self._should_use_bp(pos, postype):
         idx += 1
         continue
@@ -254,7 +250,6 @@ class ConsensusMaker(object):
       supporting_methods = set([P.method for P in prev_pos])
 
       if len(supporting_methods) < support_threshold:
-        #print('  too little support')
         idx += 1
         continue
 
@@ -276,7 +271,7 @@ class ConsensusMaker(object):
       # Ensure no duplicates.
       assert len(cluster) == len(set(cluster))
       yield cluster
-      idx = nidx
+      idx = self._directed_position_indices[cluster[0]]
       prev_pos = []
 
   def _get_median(self, L):
@@ -287,16 +282,16 @@ class ConsensusMaker(object):
     idx = int((len(L) - 0.5) / 2)
     return L[idx]
 
-  def _find_method_medians(self, cluster):
+  def _find_method_representatives(self, cluster):
     partitioned = defaultdict(list)
     for pos in cluster:
       partitioned[pos.method].append(pos)
 
-    medians = set()
+    representatives = set()
     for method in partitioned.keys():
-      medians.add(self._get_median(partitioned[method]))
+      representatives.add(partitioned[method][0])
 
-    return sorted(medians, key = lambda P: (P.pos, P.method))
+    return sorted(representatives, key = lambda P: (P.pos, P.method))
 
   def _balance_segments(self, exemplars):
     # Fix positions so we have no unopened ends or unclosed starts.
@@ -335,45 +330,40 @@ class ConsensusMaker(object):
         last_idx = self._directed_position_indices[exemplar]
 
     for bad_exemplar in bad_exemplars:
+      balancer_found = False
       for reduced_support_threshold in reversed(range(1, self._support_threshold + 1)):
-        balancing_clusters = list(self._find_clusters(
+        for balancer in self._find_clusters(
           bad_exemplar.chrom,
           bad_exemplar.expected_postype,
           reduced_support_threshold,
           bad_exemplar.start_idx,
           bad_exemplar.end_idx
-        ))
-        if len(balancing_clusters) > 0:
-          #print(json.dumps([bad_exemplar, reduced_support_threshold, balancing_clusters]))
-          for cluster in balancing_clusters:
-            yield cluster
+        ):
+          yield balancer
+          balancer_found = True
+        if balancer_found:
           break
-      else:
-        raise Exception('No balancing cluster found for %s' % bad_exemplar)
+      assert balancer_found is True, 'No balancing cluster found for %s' % bad_exemplar
 
   def _draw_exemplar_from_cluster(self, cluster):
-    method_medians = self._find_method_medians(cluster)
-    for member in method_medians:
-      self._used_bps[member] = method_medians
-    exemplar = self._get_median(method_medians)
+    method_repr = self._find_method_representatives(cluster)
+    for member in method_repr:
+      self._used_bps[member] = method_repr
+    exemplar = self._get_median(method_repr)
     chrom = exemplar.chrom
     self._exemplars[chrom].append(exemplar)
-    print('Adding', exemplar)
 
   def _check_sanity(self):
     for chrom in self._exemplars.keys():
       exemplars = self._exemplars[chrom]
-      assert len(exemplars) % 2 == 0
       assert exemplars[0].postype == 'start'
       assert exemplars[-1].postype == 'end'
-
-      for idx, exemplar in enumerate(exemplars):
-        print(idx, exemplar)
-
-      expected_postype = 'end'
-      for idx in range(1, len(exemplars) - 1):
-        assert exemplars[idx].postype == expected_postype
-        expected_postype = (expected_postype == 'start' and 'end' or 'start')
+      for idx in range(len(exemplars) - 1):
+        assert exemplars[idx].pos <= exemplars[idx + 1].pos
+      # Ideally, I could also check to see whether the breakpoints in between
+      # the first and last alternate between opening and closing, but they
+      # won't -- as we may add multiple new breakpoints in the case of a tie
+      # when balancing, we won't preserve this alternating property.
 
   def make_consensus(self):
     self._exemplars = defaultdict(list)
@@ -394,9 +384,7 @@ class ConsensusMaker(object):
         del self._exemplars[chrom]
 
     for cluster in self._balance_segments(self._exemplars):
-      chrom = cluster[0].chrom
       self._draw_exemplar_from_cluster(cluster)
-      #print(cluster)
 
     self._sort_pos(self._exemplars)
     self._check_sanity()
