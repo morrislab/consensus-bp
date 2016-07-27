@@ -365,6 +365,12 @@ class ConsensusMaker(object):
       # won't -- as we may add multiple new breakpoints in the case of a tie
       # when balancing, we won't preserve this alternating property.
 
+  def _print_consensus(self):
+    print('chrom', 'pos', sep='\t')
+    for chrom in sorted(self._exemplars.keys(), key = chrom_key):
+      for exemplar in self._exemplars[chrom]:
+        print(chrom, exemplar.pos, sep='\t')
+
   def make_consensus(self):
     self._exemplars = defaultdict(list)
     self._used_bps = {}
@@ -388,6 +394,7 @@ class ConsensusMaker(object):
 
     self._sort_pos(self._exemplars)
     self._check_sanity()
+    self._print_consensus()
 
 def load_cn_calls(cnv_files):
   cn_calls = {}
@@ -398,6 +405,16 @@ def load_cn_calls(cnv_files):
   method_names = set(cn_calls.keys())
 
   return (cn_calls, method_names)
+
+def chrom_key(chrom):
+  if chrom.isdigit():
+    return int(chrom)
+  elif chrom == 'X':
+    return 100
+  elif chrom == 'Y':
+    return 101
+  else:
+    raise Exception('Unknown chrom: %s' % chrom)
 
 def main():
   parser = argparse.ArgumentParser(
