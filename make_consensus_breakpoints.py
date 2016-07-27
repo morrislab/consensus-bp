@@ -110,7 +110,7 @@ class StructVarParser(object):
           # -1 signifies translocation, so we use -2 to indicate missing data.
           bkdist = -2
 
-        min_sv_size = 10000
+        min_sv_size = 0
         if bkdist < min_sv_size:
           continue
 
@@ -158,7 +158,7 @@ class CnvOrganizer(object):
   def organize(self):
     return self._cnvs
 
-class ConsensusMaker(object):
+class BreakpointClusterer(object):
   def __init__(self, cncalls, window, support_threshold):
     self._window = window
     self._support_threshold = support_threshold
@@ -194,12 +194,6 @@ class ConsensusMaker(object):
 
     return all_cnvs
 
-  def _sort_pos(self, positions):
-    for chrom in positions.keys():
-      # True > False, so "P.postype == 'start'" will place starts after ends if
-      # they've both at same coordinate.
-      positions[chrom].sort(key = lambda P: (P.pos, P.postype == 'start', P.method))
-
   def _extract_pos(self, cnvs):
     positions = {}
     total_cnvs = 0
@@ -211,7 +205,7 @@ class ConsensusMaker(object):
         for C in cnvs[chrom]
         for postype in ('start', 'end')
       ]
-    self._sort_pos(positions)
+    sort_pos(positions)
 
     assert sum([len(P) for P in positions.values()]) == 2*total_cnvs
     return positions
@@ -365,13 +359,8 @@ class ConsensusMaker(object):
       # won't -- as we may add multiple new breakpoints in the case of a tie
       # when balancing, we won't preserve this alternating property.
 
-  def _print_consensus(self):
-    print('chrom', 'pos', sep='\t')
-    for chrom in sorted(self._exemplars.keys(), key = chrom_key):
-      for exemplar in self._exemplars[chrom]:
-        print(chrom, exemplar.pos, sep='\t')
 
-  def make_consensus(self):
+  def cluster(self):
     self._exemplars = defaultdict(list)
     self._used_bps = {}
 
@@ -392,9 +381,83 @@ class ConsensusMaker(object):
     for cluster in self._balance_segments(self._exemplars):
       self._draw_exemplar_from_cluster(cluster)
 
-    self._sort_pos(self._exemplars)
+    sort_pos(self._exemplars)
     self._check_sanity()
-    self._print_consensus()
+    return self._exemplars
+    #self._print_consensus()
+
+class StructVarIntegrator(object):
+  def __init__(self, sv_filename):
+    self._sv = StructVarParser(sv_filename).parse()
+
+  def _find_closest_exemplar(self, sv, exemplars, window):
+    closest_exemplar = None
+    closest_dist = float('inf')
+    for exemplar in exemplars:
+      assert exemplar.chrom == sv.chrom
+      dist = abs(sv.pos - exemplar.pos)
+      if dist < closest_dist and dist <= window:
+        closest_dist = dist
+        closest_exemplar = exemplar
+    return closest_exemplar
+
+  def _match_svs_to_exemplar(self, svs, exemplars, window):
+    matches = []
+    avail_sv = set(svs)
+    avail_exemplars = set(exemplars)
+
+    while len(avail_sv) > 0 and len(avail_exemplars) > 0:
+      closest_dist = float('inf')
+      match = None
+
+      for sv in avail_sv:
+        for exemplar in avail_exemplars:
+          dist = abs(sv.pos - exemplar.pos)
+          if dist < closest_dist and dist < window:
+            closest_dist = dist
+            match = (sv, exemplar)
+
+      if match is not None:
+        matches.append(match)
+        matched_sv, matched_exemplar = match
+        avail_sv.remove(matched_sv)
+        avail_exemplars.remove(matched_exemplar)
+      else:
+        break
+
+    return (matches, avail_sv)
+
+  def integrate(self, exemplars, window):
+    for chrom in self._sv.keys():
+      num_initial_exemplars = len(exemplars[chrom])
+      chrom_exemplars = set(exemplars[chrom])
+      matches, unmatched_svs = self._match_svs_to_exemplar(self._sv[chrom], chrom_exemplars, window)
+      num_moved = 0
+      num_added = 0
+
+      for matched_sv, matched_exemplar in matches:
+        print('Moving', matched_exemplar.pos, 'to', matched_sv.pos)
+        moved = Position(
+          chrom = chrom,
+          pos = matched_sv.pos,
+          postype = matched_exemplar.postype,
+          method = 'sv_%s' % matched_exemplar.method
+        )
+        chrom_exemplars.remove(matched_exemplar)
+        chrom_exemplars.add(moved)
+        num_moved += 1
+
+      for unmatched_sv in unmatched_svs:
+        sv_bp = Position(chrom = chrom, pos = unmatched_sv.pos, postype = 'undirected', method = 'sv')
+        chrom_exemplars.add(sv_bp)
+        num_added += 1
+        print('Adding', sv_bp)
+
+      exemplars[chrom] = list(chrom_exemplars)
+      assert len(self._sv[chrom]) == num_moved + num_added
+      assert len(exemplars[chrom]) == num_initial_exemplars + num_added
+
+    sort_pos(exemplars)
 
 def load_cn_calls(cnv_files):
   cn_calls = {}
@@ -415,6 +478,19 @@ def chrom_key(chrom):
     return 101
   else:
     raise Exception('Unknown chrom: %s' % chrom)
+
+def sort_pos(positions):
+  for chrom in positions.keys():
+    # True > False, so "P.postype == 'start'" will place starts after ends if
+    # they've both at same coordinate.
+    # Order by postype: ends, then starts, then undirecteds
+    positions[chrom].sort(key = lambda P: (P.pos, P.postype == 'undirected', P.postype == 'start', P.method))
+
+def print_consensus(exemplars):
+  print('chrom', 'pos', sep='\t')
+  for chrom in sorted(exemplars.keys(), key = chrom_key):
+    for exemplar in exemplars[chrom]:
+      print(chrom, exemplar.pos, exemplar.postype, sep='\t')
 
 def main():
   parser = argparse.ArgumentParser(
@@ -457,8 +533,10 @@ def main():
   for method, cnvs in cn_calls.items():
     cn_calls[method] = CnvOrganizer(cnvs).organize()
 
-  cm = ConsensusMaker(cn_calls, args.window_size, args.support_threshold)
-  cm.make_consensus()
+  bc = BreakpointClusterer(cn_calls, args.window_size, args.support_threshold)
+  exemplars = bc.cluster()
+  StructVarIntegrator(args.sv_filename).integrate(exemplars, args.window_size)
+  print_consensus(exemplars)
 
 if __name__ == '__main__':
   main()
