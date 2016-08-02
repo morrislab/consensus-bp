@@ -164,8 +164,8 @@ class BreakpointClusterer(object):
     self._support_threshold = support_threshold
 
     cncalls = self._combine_cnvs(cncalls)
-    self._directed_positions = self._extract_pos(cncalls)
-    self._directed_position_indices = self._index_pos(self._directed_positions)
+    self.directed_positions = self._extract_pos(cncalls)
+    self._directed_position_indices = self._index_pos(self.directed_positions)
 
   def _index_pos(self, positions):
     indices = {}
@@ -213,12 +213,12 @@ class BreakpointClusterer(object):
   def _should_use_bp(self, pos, postype):
     if pos.postype != postype:
       return False
-    if pos in self._used_bps:
+    if pos in self.used_bps:
       return False
     return True
 
   def _find_clusters(self, chrom, postype, support_threshold, start_idx=None, end_idx=None):
-    positions = self._directed_positions[chrom]
+    positions = self.directed_positions[chrom]
 
     if start_idx is None:
       start_idx = 0
@@ -342,7 +342,7 @@ class BreakpointClusterer(object):
   def _draw_exemplar_from_cluster(self, cluster):
     method_repr = self._find_method_representatives(cluster)
     for member in method_repr:
-      self._used_bps[member] = method_repr
+      self.used_bps[member] = method_repr
     exemplar = self._get_median(method_repr)
     chrom = exemplar.chrom
     self._exemplars[chrom].append(exemplar)
@@ -359,12 +359,11 @@ class BreakpointClusterer(object):
       # won't -- as we may add multiple new breakpoints in the case of a tie
       # when balancing, we won't preserve this alternating property.
 
-
   def cluster(self):
     self._exemplars = defaultdict(list)
-    self._used_bps = {}
+    self.used_bps = {}
 
-    for chrom in self._directed_positions.keys():
+    for chrom in self.directed_positions.keys():
       for postype in ('start', 'end'):
         for cluster in self._find_clusters(chrom, postype, self._support_threshold):
           self._draw_exemplar_from_cluster(cluster)
@@ -384,11 +383,12 @@ class BreakpointClusterer(object):
     sort_pos(self._exemplars)
     self._check_sanity()
     return self._exemplars
-    #self._print_consensus()
 
 class StructVarIntegrator(object):
   def __init__(self, sv_filename):
     self._sv = StructVarParser(sv_filename).parse()
+    self.matched_sv_to_bp = {}
+    self.unmatched_sv = []
 
   def _find_closest_exemplar(self, sv, exemplars, window):
     closest_exemplar = None
@@ -436,7 +436,7 @@ class StructVarIntegrator(object):
       num_added = 0
 
       for matched_sv, matched_exemplar in matches:
-        print('Moving', matched_exemplar.pos, 'to', matched_sv.pos)
+        #print('Moving', matched_exemplar.pos, 'to', matched_sv.pos, file=sys.stderr)
         moved = Position(
           chrom = chrom,
           pos = matched_sv.pos,
@@ -445,19 +445,92 @@ class StructVarIntegrator(object):
         )
         chrom_exemplars.remove(matched_exemplar)
         chrom_exemplars.add(moved)
+        self.matched_sv_to_bp[moved] = matched_exemplar
         num_moved += 1
 
       for unmatched_sv in unmatched_svs:
         sv_bp = Position(chrom = chrom, pos = unmatched_sv.pos, postype = 'undirected', method = 'sv')
+        self.unmatched_sv.append(sv_bp)
         chrom_exemplars.add(sv_bp)
         num_added += 1
-        print('Adding', sv_bp)
+        #print('Adding', sv_bp, file=sys.stderr)
 
       exemplars[chrom] = list(chrom_exemplars)
-      assert len(self._sv[chrom]) == num_moved + num_added
-      assert len(exemplars[chrom]) == num_initial_exemplars + num_added
+      #assert len(self._sv[chrom]) == num_moved + num_added
+      #assert len(exemplars[chrom]) == num_initial_exemplars + num_added
 
     sort_pos(exemplars)
+
+class OutputWriter(object):
+  def _create_associate(self, bp):
+    return {
+      'method': bp.method,
+      'postype': bp.postype,
+      'chrom': bp.chrom,
+      'pos': bp.pos,
+    }
+
+  def _create_posmap(self, bps, used_bps):
+    posmap = defaultdict(lambda: defaultdict(list))
+    self._bp_to_entry_map = {}
+
+    for chrom in bps.keys():
+      for bp in bps[chrom]:
+        entry = {
+          'postype': bp.postype,
+          'pos': bp.pos,
+          'associates': []
+        }
+
+        if bp in used_bps:
+          for associate in used_bps[bp]:
+            assert associate.chrom == bp.chrom
+            assert associate.postype == bp.postype
+            entry['associates'].append(self._create_associate(associate))
+        else:
+          entry['associates'].append(self._create_associate(bp))
+
+        self._bp_to_entry_map[bp] = entry
+        posmap[bp.method][chrom].append(entry)
+
+    return posmap
+
+  def _add_svs_to_posmap(self, posmap, used_bps, matched_sv_to_bp, unmatched_sv):
+    for usv in unmatched_sv:
+      posmap['sv'][usv.chrom].append({
+        'postype': 'undirected',
+        'pos': usv.pos,
+        'associates': []
+      })
+
+    for msv, mbp in matched_sv_to_bp.items():
+      matched_bps = used_bps[mbp]
+      posmap['sv'][msv.chrom].append({
+        'postype': 'undirected',
+        'pos': msv.pos,
+        'associates': [self._create_associate(bp) for bp in matched_bps]
+      })
+      for bp in matched_bps:
+        entry = self._bp_to_entry_map[bp]
+        entry['associates'].append({
+          'method': 'sv',
+          'postype': 'undirected',
+          'chrom': msv.chrom,
+          'pos': msv.pos,
+          })
+
+  def write_details(self, bps, used_bps, matched_sv_to_bp, unmatched_sv, outfn):
+    posmap = self._create_posmap(bps, used_bps)
+    self._add_svs_to_posmap(posmap, used_bps, matched_sv_to_bp, unmatched_sv)
+    with open(outfn, 'w') as outf:
+      json.dump(posmap, outf)
+
+  def write_consensus(self, exemplars, outfn):
+    with open(outfn, 'w') as consensus_bpf:
+      print('chrom', 'pos', sep='\t', file=consensus_bpf)
+      for chrom in sorted(exemplars.keys(), key = chrom_key):
+        for exemplar in exemplars[chrom]:
+          print(chrom, exemplar.pos, sep='\t', file=consensus_bpf)
 
 def load_cn_calls(cnv_files):
   cn_calls = {}
@@ -486,12 +559,6 @@ def sort_pos(positions):
     # Order by postype: ends, then starts, then undirecteds
     positions[chrom].sort(key = lambda P: (P.pos, P.postype == 'undirected', P.postype == 'start', P.method))
 
-def print_consensus(exemplars):
-  print('chrom', 'pos', sep='\t')
-  for chrom in sorted(exemplars.keys(), key = chrom_key):
-    for exemplar in exemplars[chrom]:
-      print(chrom, exemplar.pos, exemplar.postype, sep='\t')
-
 def main():
   parser = argparse.ArgumentParser(
     description='LOL HI THERE',
@@ -507,8 +574,14 @@ def main():
     help='Window within which breakpoints must be placed to be considered equivalent')
   parser.add_argument('--support-threshold', dest='support_threshold', type=int, default=4,
     help='Number of methods that must support a cluster to place a consensus breakpoint within it')
-  parser.add_argument('dataset_name', help='Dataset name')
-  parser.add_argument('sv_filename', help='Consensus structural variants filename (VCF format)')
+  parser.add_argument('--dataset-name', dest='dataset_name', required=True,
+    help='Dataset name')
+  parser.add_argument('--sv-filename', dest='sv_fn', required=True,
+    help='Consensus structural variants filename (VCF format)')
+  parser.add_argument('--consensus-bps', dest='consensus_bp_fn', required=True,
+    help='Path to consensus BPs output')
+  parser.add_argument('--bp-details', dest='bp_details_fn', required=True,
+    help='Path to BP details output')
   parser.add_argument('cnv_files', nargs='+', help='CNV files')
   args = parser.parse_args()
 
@@ -535,8 +608,12 @@ def main():
 
   bc = BreakpointClusterer(cn_calls, args.window_size, args.support_threshold)
   exemplars = bc.cluster()
-  StructVarIntegrator(args.sv_filename).integrate(exemplars, args.window_size)
-  print_consensus(exemplars)
+  svi = StructVarIntegrator(args.sv_fn)
+  svi.integrate(exemplars, args.window_size)
+
+  ow = OutputWriter()
+  ow.write_consensus(exemplars, args.consensus_bp_fn)
+  ow.write_details(bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
