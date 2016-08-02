@@ -497,19 +497,24 @@ class OutputWriter(object):
 
   def _add_svs_to_posmap(self, posmap, used_bps, matched_sv_to_bp, unmatched_sv):
     for usv in unmatched_sv:
-      posmap['sv'][usv.chrom].append({
+      entry = {
         'postype': 'undirected',
         'pos': usv.pos,
         'associates': []
-      })
+      }
+      posmap['sv'][usv.chrom].append(entry)
+      self._bp_to_entry_map[usv] = entry
 
     for msv, mbp in matched_sv_to_bp.items():
       matched_bps = used_bps[mbp]
-      posmap['sv'][msv.chrom].append({
+      entry = {
         'postype': 'undirected',
         'pos': msv.pos,
         'associates': [self._create_associate(bp) for bp in matched_bps]
-      })
+      }
+      posmap['sv'][msv.chrom].append(entry)
+      self._bp_to_entry_map[msv] = entry
+
       for bp in matched_bps:
         entry = self._bp_to_entry_map[bp]
         entry['associates'].append({
@@ -519,9 +524,44 @@ class OutputWriter(object):
           'pos': msv.pos,
           })
 
-  def write_details(self, bps, used_bps, matched_sv_to_bp, unmatched_sv, outfn):
+  def _add_exemplars_to_posmap(self, posmap, exemplars, used_bps, matched_sv_to_bp):
+    for chrom in exemplars.keys():
+      for exemplar in exemplars[chrom]:
+        entry = {
+          'postype': exemplar.postype,
+          'pos': exemplar.pos,
+          'associates': []
+        }
+        exemplar_associate = self._create_associate(exemplar)
+        # Override this, since 'method' field no longer corresponds to
+        # something on plot.
+        exemplar_associate['method'] = 'consensus'
+
+        if exemplar.method.startswith('sv_'):
+          before_move = matched_sv_to_bp[exemplar]
+          before_bp = used_bps[before_move]
+          after_associates = [self._create_associate(bp) for bp in before_bp] + [exemplar_associate]
+          for bp in before_bp:
+            self._bp_to_entry_map[bp]['associates'] = after_associates
+          entry['associates'] = after_associates
+        elif exemplar.method == 'sv':
+          entry['associates'].append(self._create_associate(exemplar))
+          sv_entry = self._bp_to_entry_map[exemplar]
+          sv_entry['associates'].append(exemplar_associate)
+        else:
+          associate_bps = used_bps[exemplar]
+          associates = [self._create_associate(bp) for bp in associate_bps] + [exemplar_associate]
+          for bp in associate_bps:
+            entry = self._bp_to_entry_map[bp]
+            entry['associates'] = associates
+          entry['associates'] = associates
+
+        posmap['consensus'][chrom].append(entry)
+
+  def write_details(self, exemplars, bps, used_bps, matched_sv_to_bp, unmatched_sv, outfn):
     posmap = self._create_posmap(bps, used_bps)
     self._add_svs_to_posmap(posmap, used_bps, matched_sv_to_bp, unmatched_sv)
+    self._add_exemplars_to_posmap(posmap, exemplars, used_bps, matched_sv_to_bp)
     with open(outfn, 'w') as outf:
       json.dump(posmap, outf)
 
@@ -613,7 +653,7 @@ def main():
 
   ow = OutputWriter()
   ow.write_consensus(exemplars, args.consensus_bp_fn)
-  ow.write_details(bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, args.bp_details_fn)
+  ow.write_details(exemplars, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
