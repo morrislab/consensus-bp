@@ -337,7 +337,7 @@ class BreakpointClusterer(object):
           balancer_found = True
         if balancer_found:
           break
-      assert balancer_found is True, 'No balancing cluster found for %s' % bad_exemplar
+      #assert balancer_found is True, ('No balancing cluster found for %s' % str(bad_exemplar))
 
   def _draw_exemplar_from_cluster(self, cluster):
     method_repr = self._find_method_representatives(cluster)
@@ -347,11 +347,26 @@ class BreakpointClusterer(object):
     chrom = exemplar.chrom
     self._exemplars[chrom].append(exemplar)
 
+  def _remove_redundant(self):
+    for chrom in self._exemplars.keys():
+      exemplars = self._exemplars[chrom]
+
+      idx = len(exemplars) - 1
+      while idx > 0:
+        while exemplars[idx].pos == exemplars[idx - 1].pos:
+          # Remove element at idx.
+          log('Removing redundant %s because %s' % (exemplars[idx], exemplars[idx - 1]))
+          exemplars = exemplars[:idx] + exemplars[(idx + 1):]
+          idx -= 1
+        idx -= 1
+
+      self._exemplars[chrom] = exemplars
+
   def _check_sanity(self):
     for chrom in self._exemplars.keys():
       exemplars = self._exemplars[chrom]
-      assert exemplars[0].postype == 'start'
-      assert exemplars[-1].postype == 'end'
+      #assert exemplars[0].postype == 'start', ('Exemplar %s on chrom %s is not start' % (exemplars[0], chrom))
+      #assert exemplars[-1].postype == 'end', ('Exemplar %s on chrom %s is not end' % (exemplars[-1], chrom))
       for idx in range(len(exemplars) - 1):
         assert exemplars[idx].pos <= exemplars[idx + 1].pos
       # Ideally, I could also check to see whether the breakpoints in between
@@ -381,6 +396,7 @@ class BreakpointClusterer(object):
       self._draw_exemplar_from_cluster(cluster)
 
     sort_pos(self._exemplars)
+    self._remove_redundant()
     self._check_sanity()
     return self._exemplars
 
@@ -436,7 +452,6 @@ class StructVarIntegrator(object):
       num_added = 0
 
       for matched_sv, matched_exemplar in matches:
-        #print('Moving', matched_exemplar.pos, 'to', matched_sv.pos, file=sys.stderr)
         moved = Position(
           chrom = chrom,
           pos = matched_sv.pos,
@@ -450,14 +465,17 @@ class StructVarIntegrator(object):
 
       for unmatched_sv in unmatched_svs:
         sv_bp = Position(chrom = chrom, pos = unmatched_sv.pos, postype = 'undirected', method = 'sv')
+        if sv_bp in chrom_exemplars:
+          # We may have multiple SV breakpoints at the same coordinates (e.g.,
+          # a DUP and t2tINV). If this occurs, proceed no further so that our
+          # count of the SVs added remains accurate.
+          continue
         self.unmatched_sv.append(sv_bp)
         chrom_exemplars.add(sv_bp)
         num_added += 1
-        #print('Adding', sv_bp, file=sys.stderr)
 
       exemplars[chrom] = list(chrom_exemplars)
-      #assert len(self._sv[chrom]) == num_moved + num_added
-      #assert len(exemplars[chrom]) == num_initial_exemplars + num_added
+      assert len(exemplars[chrom]) == num_initial_exemplars + num_added, ('Exemplars = %s, num_initial_exemplars = %s, num_added = %s' % (len(exemplars[chrom]), num_initial_exemplars, num_added))
 
     sort_pos(exemplars)
 
@@ -479,6 +497,7 @@ class OutputWriter(object):
         entry = {
           'postype': bp.postype,
           'pos': bp.pos,
+          'method': bp.method,
           'associates': []
         }
 
@@ -500,6 +519,7 @@ class OutputWriter(object):
       entry = {
         'postype': 'undirected',
         'pos': usv.pos,
+        'method': usv.method,
         'associates': []
       }
       posmap['sv'][usv.chrom].append(entry)
@@ -510,6 +530,7 @@ class OutputWriter(object):
       entry = {
         'postype': 'undirected',
         'pos': msv.pos,
+        'method': msv.method,
         'associates': [self._create_associate(bp) for bp in matched_bps]
       }
       posmap['sv'][msv.chrom].append(entry)
@@ -530,6 +551,7 @@ class OutputWriter(object):
         entry = {
           'postype': exemplar.postype,
           'pos': exemplar.pos,
+          'method': exemplar.method,
           'associates': []
         }
         exemplar_associate = self._create_associate(exemplar)
@@ -558,12 +580,15 @@ class OutputWriter(object):
 
         posmap['consensus'][chrom].append(entry)
 
-  def write_details(self, exemplars, bps, used_bps, matched_sv_to_bp, unmatched_sv, outfn):
+  def write_details(self, exemplars, bps, used_bps, matched_sv_to_bp, unmatched_sv, methods, outfn):
     posmap = self._create_posmap(bps, used_bps)
     self._add_svs_to_posmap(posmap, used_bps, matched_sv_to_bp, unmatched_sv)
     self._add_exemplars_to_posmap(posmap, exemplars, used_bps, matched_sv_to_bp)
     with open(outfn, 'w') as outf:
-      json.dump(posmap, outf)
+      json.dump({
+        'methods': list(methods),
+        'bp': posmap,
+      }, outf)
 
   def write_consensus(self, exemplars, outfn):
     with open(outfn, 'w') as consensus_bpf:
@@ -599,6 +624,11 @@ def sort_pos(positions):
     # Order by postype: ends, then starts, then undirecteds
     positions[chrom].sort(key = lambda P: (P.pos, P.postype == 'undirected', P.postype == 'start', P.method))
 
+def log(*msgs):
+  if log.verbose:
+    print(*msgs, file=sys.stderr)
+log.verbose = False
+
 def main():
   parser = argparse.ArgumentParser(
     description='LOL HI THERE',
@@ -622,8 +652,11 @@ def main():
     help='Path to consensus BPs output')
   parser.add_argument('--bp-details', dest='bp_details_fn', required=True,
     help='Path to BP details output')
+  parser.add_argument('--verbose', dest='verbose', action='store_true')
   parser.add_argument('cnv_files', nargs='+', help='CNV files')
   args = parser.parse_args()
+
+  log.verbose = args.verbose
 
   dataset_name = args.dataset_name
 
@@ -653,7 +686,7 @@ def main():
 
   ow = OutputWriter()
   ow.write_consensus(exemplars, args.consensus_bp_fn)
-  ow.write_details(exemplars, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, args.bp_details_fn)
+  ow.write_details(exemplars, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
