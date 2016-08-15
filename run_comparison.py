@@ -21,11 +21,12 @@ def main():
     help='Number of available (optional or required) methods necessary to establish consensus')
   parser.add_argument('--window-size', dest='window_size', type=int, default=5000,
     help='Window within which breakpoints must be placed to be considered equivalent')
-  parser.add_argument('--undirected', dest='directed', action='store_false',
-    help='Whether we should treat breakpoints as directed (i.e., "start" distinct from "end")')
   parser.add_argument('--blacklist', dest='blacklist',
     help='List of blacklisted tumor samples')
+  parser.add_argument('--centromere-filename', dest='centromere_fn', required=True,
+      help='File containing centromeres (e.g., http://hgdownload.cse.ucsc.edu/goldenPath/hg19/database/cytoBand.txt.gz)')
   parser.add_argument('sv_dir', help='Directory containing SVs in VCF format')
+  parser.add_argument('out_dir', help='Output directory')
   parser.add_argument('method', nargs='+', help='Methods whose CNV calls you wish to use')
   args = parser.parse_args()
 
@@ -54,20 +55,26 @@ def main():
       continue
     cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in methods_for_guid])
 
-    cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/compare_breakpoints.py '
+    cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/make_consensus_breakpoints.py '
     if args.required_methods:
       cmd += ' --required-methods %s' % args.required_methods
     if args.optional_methods:
       cmd += ' --optional-methods %s' % args.optional_methods
-    if not args.directed:
-      cmd += ' --undirected'
     cmd += ' --num-needed-methods %s' % args.num_needed_methods
-    cmd += ' --window-size %s' % args.window_size
+    cmd += ' --support-threshold %s' % (len(methods_for_guid) - 1)
+    cmd += ' --dataset-name %s' % guid
 
     sv_path = glob.glob(os.path.join(args.sv_dir, '%s.*.sv.vcf.gz' % guid))
     if len(sv_path) != 1:
       continue
-    cmd += ' %s %s %s' % (guid, sv_path[0], cnv_calls)
+    cmd += ' --window-size %s' % args.window_size
+    cmd += ' --sv-filename %s' % sv_path[0]
+    cmd += ' --centromere-filename %s' % args.centromere_fn
+    cmd += ' --consensus-bps %s/%s.txt' % (args.out_dir, guid)
+    cmd += ' --bp-details %s/%s.json' % (args.out_dir, guid)
+    cmd += ' %s' % cnv_calls
+    cmd += ' >%s/%s.stdout' % (args.out_dir, guid)
+    cmd += ' 2>%s/%s.stderr' % (args.out_dir, guid)
 
     try:
       print(cmd)
