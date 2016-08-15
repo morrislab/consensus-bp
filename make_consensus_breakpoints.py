@@ -118,6 +118,97 @@ class StructVarParser(object):
 
     return sv
 
+# To get centromeric regions:
+#   curl -s "http://hgdownload.cse.ucsc.edu/goldenPath/hg19/database/cytoBand.txt.gz" | gunzip -c | grep acen
+class CentromereParser(object):
+  def load(self, filename):
+    regions = defaultdict(list)
+
+    with gzip.open(filename) as cf:
+      for line in cf:
+        fields = line.strip().split()
+        chrom, start, end, arm, region_type = fields[0].upper(), int(fields[1]), int(fields[2]), fields[3].lower(), fields[4].lower()
+
+        assert chrom.startswith('CHR')
+        chrom = chrom[3:]
+
+        if region_type != 'acen':
+          continue
+        regions[chrom].append((start, end))
+
+    for chrom in regions.keys():
+      assert len(regions[chrom]) == 2
+      regions[chrom].sort()
+      assert regions[chrom][0][1] == regions[chrom][1][0]
+      regions[chrom] = (regions[chrom][0][0], regions[chrom][1][1])
+      assert regions[chrom][0] < regions[chrom][1]
+
+    return dict(regions)
+
+class CentromereAndTelomereBreaker(object):
+  def __init__(self, threshold = 1e6):
+    self._threshold = threshold
+    self._chr_lens = {
+      '1': 248956422,
+      '2': 242193529,
+      '3': 198295559,
+      '4': 190214555,
+      '5': 181538259,
+      '6': 170805979,
+      '7': 159345973,
+      '8': 145138636,
+      '9': 138394717,
+      '10': 133797422,
+      '11': 135086622,
+      '12': 133275309,
+      '13': 114364328,
+      '14': 107043718,
+      '15': 101991189,
+      '16': 90338345,
+      '17': 83257441,
+      '18': 80373285,
+      '19': 58617616,
+      '20': 64444167,
+      '21': 46709983,
+      '22': 50818468,
+      'X': 156040895,
+      'Y': 57227415
+    }
+
+  def add_breakpoints(self, positions, centromeres):
+    # Exclude chrY, since males lack it.
+    chroms = set(self._chr_lens.keys()) - set(['Y'])
+
+    for chrom in chroms:
+      points = {
+        'chrom_start': 1,
+        'chrom_end': self._chr_lens[chrom],
+        'centromere_start': centromeres[chrom][0],
+        'centromere_end': centromeres[chrom][1]
+      }
+      presence = {k: None for k in points.keys()}
+
+      for pos in positions[chrom]:
+        for ptype, point in points.items():
+          if presence[ptype] is not None:
+            continue
+          if abs(point - pos.pos) <= self._threshold:
+            presence[ptype] = pos
+
+      for ptype, pos in presence.items():
+        if pos is not None:
+          log('Already have chr%s.%s at %s' % (chrom, ptype, pos))
+          continue
+        log('Adding %s.%s at %s' % (chrom, ptype, points[ptype]))
+        positions[chrom].append(Position(
+          chrom = chrom,
+          pos = points[ptype],
+          postype = 'undirected',
+          method = ptype,
+        ))
+
+    sort_pos(positions)
+
 class CnvOrganizer(object):
   def __init__(self, cnvs):
     cnvs = self._organize_cnvs(cnvs)
@@ -396,7 +487,9 @@ class BreakpointClusterer(object):
       self._draw_exemplar_from_cluster(cluster)
 
     sort_pos(self._exemplars)
-    self._remove_redundant()
+    # Remove breakpoints at same position -- e.g., because an end and then a
+    # start occur on top of each other.
+    self._exemplars = BreakpointFilter().remove_adjacent(self._exemplars, threshold=0)
     self._check_sanity()
     return self._exemplars
 
@@ -571,12 +664,14 @@ class OutputWriter(object):
           sv_entry = self._bp_to_entry_map[exemplar]
           sv_entry['associates'].append(exemplar_associate)
         else:
-          associate_bps = used_bps[exemplar]
+          if exemplar in used_bps:
+            associate_bps = used_bps[exemplar]
+          else:
+            associate_bps = []
           associates = [self._create_associate(bp) for bp in associate_bps] + [exemplar_associate]
-          for bp in associate_bps:
-            entry = self._bp_to_entry_map[bp]
-            entry['associates'] = associates
           entry['associates'] = associates
+          for bp in associate_bps:
+            self._bp_to_entry_map[bp]['associates'] = associates
 
         posmap['consensus'][chrom].append(entry)
 
@@ -596,6 +691,36 @@ class OutputWriter(object):
       for chrom in sorted(exemplars.keys(), key = chrom_key):
         for exemplar in exemplars[chrom]:
           print(chrom, exemplar.pos, sep='\t', file=consensus_bpf)
+
+class BreakpointFilter(object):
+  def remove_adjacent(self, breakpoints, threshold):
+    filtered = defaultdict(list)
+
+    for chrom in breakpoints.keys():
+      points = breakpoints[chrom]
+
+      idx = len(points) - 1
+      while idx > 0:
+        while points[idx].pos - points[idx - 1].pos <= threshold:
+          # Remove element at idx.
+          log('Removing %s because of preceding %s' % (points[idx], points[idx - 1]))
+          points = points[:idx] + points[(idx + 1):]
+          idx -= 1
+        idx -= 1
+
+      filtered[chrom] = points
+
+    return filtered
+
+  def remove_sex(self, breakpoints):
+    filtered = defaultdict(list)
+
+    for chrom in breakpoints.keys():
+      if chrom in ('X', 'Y'):
+        continue
+      filtered[chrom] = breakpoints[chrom]
+
+    return filtered
 
 def load_cn_calls(cnv_files):
   cn_calls = {}
@@ -648,6 +773,8 @@ def main():
     help='Dataset name')
   parser.add_argument('--sv-filename', dest='sv_fn', required=True,
     help='Consensus structural variants filename (VCF format)')
+  parser.add_argument('--centromere-filename', dest='centromere_fn', required=True,
+      help='File containing centromeres (e.g., http://hgdownload.cse.ucsc.edu/goldenPath/hg19/database/cytoBand.txt.gz)')
   parser.add_argument('--consensus-bps', dest='consensus_bp_fn', required=True,
     help='Path to consensus BPs output')
   parser.add_argument('--bp-details', dest='bp_details_fn', required=True,
@@ -681,12 +808,20 @@ def main():
 
   bc = BreakpointClusterer(cn_calls, args.window_size, args.support_threshold)
   exemplars = bc.cluster()
+
   svi = StructVarIntegrator(args.sv_fn)
   svi.integrate(exemplars, args.window_size)
 
+  centromere_and_telomere_threshold = 1e6
+  adjacent_threshold = 1e4
+  centromeres = CentromereParser().load(args.centromere_fn)
+  CentromereAndTelomereBreaker(centromere_and_telomere_threshold).add_breakpoints(exemplars, centromeres)
+  filtered = BreakpointFilter().remove_adjacent(exemplars, adjacent_threshold)
+  filtered = BreakpointFilter().remove_sex(filtered)
+
   ow = OutputWriter()
-  ow.write_consensus(exemplars, args.consensus_bp_fn)
-  ow.write_details(exemplars, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
+  ow.write_consensus(filtered, args.consensus_bp_fn)
+  ow.write_details(filtered, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
