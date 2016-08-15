@@ -104,16 +104,6 @@ class StructVarParser(object):
           info[K] = V
 
         svclass = info['SVCLASS']
-        if 'BKDIST' in info:
-          bkdist = int(info['BKDIST'])
-        else:
-          # -1 signifies translocation, so we use -2 to indicate missing data.
-          bkdist = -2
-
-        min_sv_size = 0
-        if bkdist < min_sv_size:
-          continue
-
         sv[chrom].append(StructVar(chrom=chrom, pos=pos, svclass=svclass))
 
     return sv
