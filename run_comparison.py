@@ -3,6 +3,7 @@ import glob
 import os
 from collections import defaultdict
 import glob
+import math
 
 def load_blacklist(blacklistfn):
   with open(blacklistfn) as blist:
@@ -51,8 +52,9 @@ def main():
     if guid in blacklist:
       continue
 
-    if len(methods_for_guid) <= args.num_needed_methods:
+    if len(methods_for_guid) < args.num_needed_methods:
       continue
+    support_threshold = int(max(2, math.ceil(len(methods_for_guid) / 2.0)))
     cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in methods_for_guid])
 
     cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/make_consensus_breakpoints.py '
@@ -61,7 +63,7 @@ def main():
     if args.optional_methods:
       cmd += ' --optional-methods %s' % args.optional_methods
     cmd += ' --num-needed-methods %s' % args.num_needed_methods
-    cmd += ' --support-threshold %s' % (len(methods_for_guid) - 1)
+    cmd += ' --support-threshold %s' % support_threshold
     cmd += ' --dataset-name %s' % guid
 
     sv_path = glob.glob(os.path.join(args.sv_dir, '%s.*.sv.vcf.gz' % guid))
