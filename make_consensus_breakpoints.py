@@ -39,27 +39,14 @@ class CnvFileParser(object):
             # intervals, which we convert to half-open. This assumption may be
             # wrong.
             'end': int(row['end']) + 1,
-            'cell_prev': float(row['clonal_frequency']),
           }
+          if 'clonal_frequency' in row:
+            cnv['cell_prev'] = float(row['clonal_frequency'])
+          else:
+            cnv['cell_prev'] = None
         except ValueError, e:
           print(e, row, filename, file=sys.stderr)
           continue
-
-        total, minor, major = row['copy_number'], row['minor_cn'], row['major_cn']
-        # On occasion, ABSOLUTE will report major but not minor.
-        if major == 'NA' or minor == 'NA':
-          continue
-        else:
-          # Convert to float first to allow for CN values with decimal point such as "1.0".
-          minor = float(minor)
-          major = float(major)
-
-        assert minor.is_integer() and major.is_integer()
-        # Ensure minor <= major.
-        if minor > major:
-          minor, major = major, minor
-        cnv['minor'] = int(minor)
-        cnv['major'] = int(major)
 
         # 'mustonen*' methods encode X as chr23.
         if cnv['chrom'] == '23':
@@ -70,9 +57,9 @@ class CnvFileParser(object):
         except AssertionError, e:
           print(e, file=sys.stderr)
           continue
-        if not (0.0 <= cnv['cell_prev'] <= 1.0):
+        if cnv['cell_prev'] is None or (not (0.0 <= cnv['cell_prev'] <= 1.0)):
           print('Cellular prevalence is %s in %s' % (cnv['cell_prev'], filename), file=sys.stderr)
-          if cnv['cell_prev'] < 0 or cnv['cell_prev'] >= 1.05:
+          if cnv['cell_prev'] is not None and cnv['cell_prev'] < 0 or cnv['cell_prev'] >= 1.05:
             continue
           cnv['cell_prev'] = 1.0
         cnvs.append(cnv)
