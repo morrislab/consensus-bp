@@ -368,36 +368,28 @@ class BreakpointClusterer(object):
     bad_exemplars = set()
 
     for chrom in exemplars.keys():
-      first_exemplar, last_exemplar = exemplars[chrom][0], exemplars[chrom][-1]
-      if first_exemplar.postype != 'start':
-        bad_exemplars.add(MissingExemplarInterval(
-          chrom = chrom,
-          start_idx = None,
-          end_idx = self._directed_position_indices[first_exemplar],
-          expected_postype = 'start'
-        ))
+      expected_postype = 'start'
+      range_start = None
 
-      if last_exemplar.postype != 'end':
-        bad_exemplars.add(MissingExemplarInterval(
-          chrom = chrom,
-          start_idx = self._directed_position_indices[last_exemplar] + 1,
-          end_idx = None,
-          expected_postype = 'end'
-        ))
-
-      last_postype = first_exemplar.postype
-      last_idx = self._directed_position_indices[first_exemplar]
-      for exemplar in exemplars[chrom][1:-1]:
-        expected_postype = (last_postype == 'start' and 'end' or 'start')
+      for exemplar in exemplars[chrom]:
         if exemplar.postype != expected_postype:
           bad_exemplars.add(MissingExemplarInterval(
             chrom = chrom,
-            start_idx = last_idx + 1,
+            start_idx = range_start,
             end_idx = self._directed_position_indices[exemplar],
             expected_postype = expected_postype
           ))
-        last_postype = exemplar.postype
-        last_idx = self._directed_position_indices[exemplar]
+        range_start = self._directed_position_indices[exemplar] + 1
+        expected_postype = (exemplar.postype == 'start' and 'end' or 'start')
+
+      # Must special-case last breakpoint on chromosome.
+      if exemplars[chrom][-1].postype != 'end':
+        bad_exemplars.add(MissingExemplarInterval(
+          chrom = chrom,
+          start_idx = range_start,
+          end_idx = None,
+          expected_postype = 'end'
+        ))
 
     for bad_exemplar in bad_exemplars:
       balancer_found = False
@@ -409,6 +401,7 @@ class BreakpointClusterer(object):
           bad_exemplar.start_idx,
           bad_exemplar.end_idx
         ):
+          log('Found', balancer, 'in', bad_exemplar, 'with', reduced_support_threshold, self._support_threshold)
           yield balancer
           balancer_found = True
         if balancer_found:
@@ -553,7 +546,7 @@ class StructVarIntegrator(object):
         num_added += 1
 
       exemplars[chrom] = list(chrom_exemplars)
-      assert len(exemplars[chrom]) == num_initial_exemplars + num_added, ('Exemplars = %s, num_initial_exemplars = %s, num_added = %s' % (len(exemplars[chrom]), num_initial_exemplars, num_added))
+      #assert len(exemplars[chrom]) == num_initial_exemplars + num_added, ('Exemplars = %s, num_initial_exemplars = %s, num_added = %s' % (len(exemplars[chrom]), num_initial_exemplars, num_added))
 
     sort_pos(exemplars)
 
