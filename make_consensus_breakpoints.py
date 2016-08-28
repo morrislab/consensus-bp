@@ -679,7 +679,7 @@ class BreakpointFilter(object):
 
       idx = len(points) - 1
       while idx > 0:
-        while points[idx].pos - points[idx - 1].pos <= threshold:
+        while idx > 0 and points[idx].pos - points[idx - 1].pos <= threshold:
           # Remove element at idx.
           log('Removing %s because of preceding %s' % (points[idx], points[idx - 1]))
           points = points[:idx] + points[(idx + 1):]
