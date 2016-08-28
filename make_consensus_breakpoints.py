@@ -52,6 +52,10 @@ class CnvFileParser(object):
         if cnv['chrom'] == '23':
           cnv['chrom'] = 'X'
 
+        # DKFZ intervals are left-closed, right-open.
+        if 'dkfz/' in filename:
+          cnv['end'] -= 1
+
         try:
           assert cnv['start'] < cnv['end'], '%s is not < %s in %s' % (cnv['start'], cnv['end'], filename)
         except AssertionError, e:
