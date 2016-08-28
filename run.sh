@@ -15,17 +15,16 @@ python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/run_comparison.p
   --blacklist $BLACKLIST \
   --window-size 100000 \
   --centromere-filename $CENTROMERES \
-  --optional-methods vanloo_wedge_segs,mustonen095,peifer,dkfz,broad \
+  --optional-methods vanloo_wedge_segs,mustonen095,peifer,broad,dkfz \
   $SVDIR \
   $OUTDIR \
   broad dkfz mustonen095 peifer vanloo_wedge_segs \
   | parallel -j16
 
-cd $OUTDIR
-for foo in *.json; do echo $(echo $foo | cut -d . -f1)$'\t'$(cat $foo | jq -r '.methods|sort|join(",")'); done > ~/work/exultant-pistachio/data/tmp/consensus_bp_methods.txt
-
-cd ~/work/exultant-pistachio/data
 today=$(date '+%Y%m%d')
+cd $OUTDIR
+for foo in *.json; do echo $(echo $foo | cut -d . -f1)$'\t'$(cat $foo | jq -r '.methods|sort|join(",")'); done > ~/work/exultant-pistachio/data/archives/consensus_bp_methods.$today.txt
+cd ~/work/exultant-pistachio/data
 tar czf ~/work/exultant-pistachio/data/archives/consensus_bp.$today.tar.gz consensus_bp/*.txt
 
 cd ~/work/bp-witness
