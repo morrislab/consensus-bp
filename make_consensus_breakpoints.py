@@ -296,7 +296,11 @@ class BreakpointClusterer(object):
       start_idx = 0
     if end_idx is None:
       end_idx = len(positions)
-    assert 0 <= start_idx < end_idx <= len(positions)
+    # We can have start_idx = end_idx when there are two consecutive exemplars
+    # of the same type (e.g., both starts or both ends), meaning they get
+    # flagged as bad exemplars, but no non-exemplar breakpoints exist between
+    # them.
+    assert 0 <= start_idx <= end_idx <= len(positions)
 
     # Ensure no duplicates.
     assert len(positions) == len(set(positions))
