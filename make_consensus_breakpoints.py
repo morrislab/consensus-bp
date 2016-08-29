@@ -10,31 +10,32 @@ Position = namedtuple('Position', ('chrom', 'pos', 'postype', 'method'))
 StructVar = namedtuple('StructVar', ('chrom', 'pos', 'svclass'))
 Interval = namedtuple('Interval', ('start', 'end', 'breakpoints', 'method'))
 
+# Taken from https://genome.ucsc.edu/goldenpath/help/hg19.chrom.sizes.
 CHROM_LENS = {
-  '1': 248956422,
-  '2': 242193529,
-  '3': 198295559,
-  '4': 190214555,
-  '5': 181538259,
-  '6': 170805979,
-  '7': 159345973,
-  '8': 145138636,
-  '9': 138394717,
-  '10': 133797422,
-  '11': 135086622,
-  '12': 133275309,
-  '13': 114364328,
-  '14': 107043718,
-  '15': 101991189,
-  '16': 90338345,
-  '17': 83257441,
-  '18': 80373285,
-  '19': 58617616,
-  '20': 64444167,
-  '21': 46709983,
-  '22': 50818468,
-  'X': 156040895,
-  'Y': 57227415
+  '1':249250621,
+  '2':243199373,
+  '3':198022430,
+  '4':191154276,
+  '5':180915260,
+  '6':171115067,
+  '7':159138663,
+  '8':146364022,
+  '9':141213431,
+  '10':135534747,
+  '11':135006516,
+  '12':133851895,
+  '13':115169878,
+  '14':107349540,
+  '15':102531392,
+  '16':90354753,
+  '17':81195210,
+  '18':78077248,
+  '19':59128983,
+  '20':63025520,
+  '21':48129895,
+  '22':51304566,
+  'X':155270560,
+  'Y':59373566,
 }
 
 class CnvFileParser(object):
@@ -85,6 +86,8 @@ class CnvFileParser(object):
 
         try:
           assert cnv['start'] < cnv['end'], '%s is not < %s in %s' % (cnv['start'], cnv['end'], filename)
+          assert cnv['start'] >= 1, ('Start position %s is < 1 in %s ' % (cnv['start'], filename))
+          assert cnv['end'] <= CHROM_LENS[cnv['chrom']], ('End position %s exceeds length of chromosome %s (%s) in %s' % (cnv['end'], cnv['chrom'], CHROM_LENS[cnv['chrom']], filename))
         except AssertionError, e:
           print(e, file=sys.stderr)
           continue
@@ -263,6 +266,27 @@ class ConsensusMaker(object):
 
     return intervals
 
+  def _score_breakpoints(self, intervals):
+    # Score breakpoints based on the size of the gap they surround. Smaller
+    # gaps indicate more certainty in breakpoint placement and thus are
+    # preferable.
+    method_intervals = defaultdict(list)
+    bp_scores = {}
+
+    for chrom in intervals.keys():
+      for interval in intervals[chrom]:
+        method_intervals[interval.method].append(interval)
+
+    for method in method_intervals.keys():
+      sorted_intervals = sorted(method_intervals[method], key = lambda I: I.end - I.start)
+      for interval_rank, interval in enumerate(sorted_intervals):
+        interval_score = 1.0 - (float(interval_rank) / len(sorted_intervals))
+        print('whoa', method, interval, interval_score)
+        for bp in interval.breakpoints:
+          bp_scores[bp] = interval_score
+
+    return bp_scores
+
   def _make_chrom_intervals(self, positions, chrom, upstream_window, downstream_window):
     if len(positions) == 0:
       return []
@@ -304,6 +328,8 @@ class ConsensusMaker(object):
     assert len(all_intervals) == (len(positions) - 2)/2 + 2
     all_intervals = sorted(all_intervals, key = lambda I: (I.start, I.end, I.method))
 
+    for interval in all_intervals:
+      assert interval.start <= interval.end
     for idx in range(len(all_intervals) - 1):
       first, second = all_intervals[idx], all_intervals[idx + 1]
       assert first.start <= second.start
@@ -419,7 +445,7 @@ class ConsensusMaker(object):
   def _lol(self, blah):
     return '\n'.join([str(v) for v in blah])
 
-  def _make_consensus(self, intervals, threshold):
+  def _make_consensus(self, intervals, bp_scores, threshold):
     consensus = {}
 
     for chrom in intervals.keys():
@@ -428,10 +454,10 @@ class ConsensusMaker(object):
       for intersecting_intervals in self._find_intersecting_intervals(intervals[chrom], threshold):
         intersection = self._compute_intersection(intersecting_intervals)
         if len(intersection.breakpoints) > 0:
-          points = sorted(intersection.breakpoints, key = lambda P: (P.pos, P.postype == 'start'))
-          representatives = self._find_method_representatives(points)
-          consensus[chrom].append(self._get_median(representatives))
-          print('Bingo', self._lol(intersecting_intervals),  intersection, self._get_median(representatives), sep='\n')
+          # Take breakpoint with highest score, which corresponds to smallest gap in associated interval.
+          consensus_bp = sorted(intersection.breakpoints, key = lambda bp: bp_scores[bp])[-1]
+          consensus[chrom].append(consensus_bp)
+          print('Bingo', self._lol(intersecting_intervals), intersection, consensus_bp, sep='\n')
         else:
           # We have no breakpoints in the interval, so we just take the 5' end of the interval.
           bp = Position(
@@ -451,7 +477,8 @@ class ConsensusMaker(object):
 
   def make_consensus(self):
     intervals = self._make_intervals(self._cncalls, int(0.5*self._window), int(0.5*self._window))
-    return self._make_consensus(intervals, self._support_threshold)
+    bp_scores = self._score_breakpoints(intervals)
+    return self._make_consensus(intervals, bp_scores, self._support_threshold)
 
 class StructVarIntegrator(object):
   def __init__(self, sv_filename):
