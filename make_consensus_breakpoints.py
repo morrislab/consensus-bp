@@ -8,7 +8,34 @@ from collections import defaultdict, namedtuple
 
 Position = namedtuple('Position', ('chrom', 'pos', 'postype', 'method'))
 StructVar = namedtuple('StructVar', ('chrom', 'pos', 'svclass'))
-MissingExemplarInterval = namedtuple('MissingExemplarInterval', ('chrom', 'start_idx', 'end_idx', 'expected_postype'))
+Interval = namedtuple('Interval', ('start', 'end', 'breakpoints', 'method'))
+
+CHROM_LENS = {
+  '1': 248956422,
+  '2': 242193529,
+  '3': 198295559,
+  '4': 190214555,
+  '5': 181538259,
+  '6': 170805979,
+  '7': 159345973,
+  '8': 145138636,
+  '9': 138394717,
+  '10': 133797422,
+  '11': 135086622,
+  '12': 133275309,
+  '13': 114364328,
+  '14': 107043718,
+  '15': 101991189,
+  '16': 90338345,
+  '17': 83257441,
+  '18': 80373285,
+  '19': 58617616,
+  '20': 64444167,
+  '21': 46709983,
+  '22': 50818468,
+  'X': 156040895,
+  'Y': 57227415
+}
 
 class CnvFileParser(object):
   def load(self, filename):
@@ -129,41 +156,15 @@ class CentromereParser(object):
 class CentromereAndTelomereBreaker(object):
   def __init__(self, threshold = 1e6):
     self._threshold = threshold
-    self._chr_lens = {
-      '1': 248956422,
-      '2': 242193529,
-      '3': 198295559,
-      '4': 190214555,
-      '5': 181538259,
-      '6': 170805979,
-      '7': 159345973,
-      '8': 145138636,
-      '9': 138394717,
-      '10': 133797422,
-      '11': 135086622,
-      '12': 133275309,
-      '13': 114364328,
-      '14': 107043718,
-      '15': 101991189,
-      '16': 90338345,
-      '17': 83257441,
-      '18': 80373285,
-      '19': 58617616,
-      '20': 64444167,
-      '21': 46709983,
-      '22': 50818468,
-      'X': 156040895,
-      'Y': 57227415
-    }
 
   def add_breakpoints(self, positions, centromeres):
     # Exclude chrY, since males lack it.
-    chroms = set(self._chr_lens.keys()) - set(['Y'])
+    chroms = set(CHROM_LENS.keys()) - set(['Y'])
 
     for chrom in chroms:
       points = {
         'chrom_start': 1,
-        'chrom_end': self._chr_lens[chrom],
+        'chrom_end': CHROM_LENS[chrom],
         'centromere_start': centromeres[chrom][0],
         'centromere_end': centromeres[chrom][1]
       }
@@ -230,119 +231,140 @@ class CnvOrganizer(object):
   def organize(self):
     return self._cnvs
 
-class BreakpointClusterer(object):
+class ConsensusMaker(object):
   def __init__(self, cncalls, window, support_threshold):
+    self._cncalls = cncalls
     self._window = window
     self._support_threshold = support_threshold
 
-    cncalls = self._combine_cnvs(cncalls)
-    self.directed_positions = self._extract_pos(cncalls)
-    self._directed_position_indices = self._index_pos(self.directed_positions)
+  def _sort_intervals(self, intervals):
+    return sorted(intervals, key = lambda I: I.start)
 
-  def _index_pos(self, positions):
-    indices = {}
-    total_pos = 0
-
-    for chrom in positions.keys():
-      pos = positions[chrom]
-      indices.update({ P: idx for (idx, P) in enumerate(pos) })
-      total_pos += len(pos)
-
-    # Ensure no duplicate positions.
-    assert len(indices) == total_pos
-    return indices
-
-  def _combine_cnvs(self, cncalls):
+  def _make_intervals(self, cncalls, upstream_window, downstream_window):
     all_chroms = set([C for L in cncalls.values() for C in L.keys()])
-    all_cnvs = defaultdict(list)
+    intervals = {}
 
     for chrom in all_chroms:
-      chrom_cnvs = []
+      intervals[chrom] = []
+
       for method in cncalls.keys():
+        positions = []
         for cnv in cncalls[method][chrom]:
-          cnv = dict(cnv) # Copy object before modifying
-          cnv['method'] = method
-          all_cnvs[chrom].append(cnv)
+          assert cnv['start'] <= cnv['end']
+          positions += [
+            Position(chrom=chrom, pos=cnv[coordtype], postype=coordtype, method=method)
+            for coordtype in ('start', 'end')
+          ]
+        for idx in range(len(positions) - 1):
+          assert positions[idx].pos <= positions[idx + 1].pos
+        intervals[chrom] += self._make_chrom_intervals(positions, chrom, upstream_window, downstream_window)
 
-    return all_cnvs
+      intervals[chrom] = self._sort_intervals(intervals[chrom])
 
-  def _extract_pos(self, cnvs):
-    positions = {}
-    total_cnvs = 0
+    return intervals
 
-    for chrom in cnvs.keys():
-      total_cnvs += len(cnvs[chrom])
-      positions[chrom] = [
-        Position(chrom=chrom, pos=C[postype], postype=postype, method=C['method'])
-        for C in cnvs[chrom]
-        for postype in ('start', 'end')
+  def _make_chrom_intervals(self, positions, chrom, upstream_window, downstream_window):
+    if len(positions) == 0:
+      return []
+
+    assert len(positions) > 0 and len(positions) % 2 == 0
+    assert positions[0].postype == 'start'
+    assert positions[-1].postype == 'end'
+
+    chrom_len = CHROM_LENS[chrom]
+
+    terminal_intervals = set()
+    for terminal_pos in (positions[0], positions[-1]):
+      terminal_intervals.add(Interval(
+        start = max(1, terminal_pos.pos - upstream_window),
+        end = min(chrom_len, terminal_pos.pos + downstream_window),
+        # Use frozenset rather than set so we can later form sets of intervals.
+        # (Sets require their elements to be hashable, but sets themselves
+        # aren't hashable.)
+        breakpoints = frozenset([terminal_pos]),
+        method = terminal_pos.method,
+      ))
+
+    intervals = set()
+    for idx in range(1, len(positions) - 1, 2):
+      upstream_end, downstream_start = positions[idx], positions[idx + 1]
+      assert upstream_end.postype == 'end' and downstream_start.postype == 'start'
+      assert upstream_end.pos <= downstream_start.pos
+      assert upstream_end.method == downstream_start.method and upstream_end.chrom == downstream_start.chrom == chrom
+      intervals.add(Interval(
+        start = max(1, upstream_end.pos - upstream_window),
+        end = min(chrom_len, downstream_start.pos + downstream_window),
+        breakpoints = frozenset([upstream_end, downstream_start]),
+        method = upstream_end.method # Which is same as downstream_start.method
+      ))
+
+    all_intervals = terminal_intervals | intervals
+    assert len(all_intervals) > 0
+    # One interval for every pair in middle, plus separate intervals for first and last point.
+    assert len(all_intervals) == (len(positions) - 2)/2 + 2
+    all_intervals = sorted(all_intervals, key = lambda I: (I.start, I.end, I.method))
+
+    for idx in range(len(all_intervals) - 1):
+      first, second = all_intervals[idx], all_intervals[idx + 1]
+      assert first.start <= second.start
+      assert first.end <= second.end
+
+    return all_intervals
+
+  def _find_first_intersecting_intervals(self, intervals, threshold):
+    # As we halt after we find the first intersection, we don't need to handle
+    # resetting these values in the loop after we find an intersection. This is
+    # why I wrote both _intersect and _find_first_intersection.
+    prev_overlapping = []
+    prev_num_overlapping = 0
+    threshold_reached = False
+    idx = 0
+    overlapping = []
+
+    while idx < len(intervals):
+      interval = intervals[idx]
+      overlapping = [
+        I for I in overlapping
+        if I.end > interval.start
+        # If segment is smaller than window size, a method can have intervals
+        # that overlap with its own intervals, even if none of the segments in
+        # the input overlap with each other. If this occurs, discard upstream
+        # segments to accommodate the one we're dealing with at the moment.
+        and I.method != interval.method
       ]
-    sort_pos(positions)
 
-    assert sum([len(P) for P in positions.values()]) == 2*total_cnvs
-    return positions
+      overlapping.append(interval)
+      num_overlapping = len(overlapping)
+      assert num_overlapping > 0
 
-  def _should_use_bp(self, pos, postype):
-    if pos.postype != postype:
-      return False
-    if pos in self.used_bps:
-      return False
-    return True
-
-  def _find_clusters(self, chrom, postype, support_threshold, start_idx=None, end_idx=None):
-    positions = self.directed_positions[chrom]
-
-    if start_idx is None:
-      start_idx = 0
-    if end_idx is None:
-      end_idx = len(positions)
-    # We can have start_idx = end_idx when there are two consecutive exemplars
-    # of the same type (e.g., both starts or both ends), meaning they get
-    # flagged as bad exemplars, but no non-exemplar breakpoints exist between
-    # them.
-    assert 0 <= start_idx <= end_idx <= len(positions)
-
-    # Ensure no duplicates.
-    assert len(positions) == len(set(positions))
-    prev_pos = []
-
-    idx = start_idx
-    while idx < end_idx:
-      pos = positions[idx]
-      if not self._should_use_bp(pos, postype):
-        idx += 1
-        continue
-
-      prev_pos.append(pos)
-      for P in prev_pos:
-        assert pos.pos >= P.pos
-      prev_pos = [P for P in prev_pos if pos.pos - P.pos <= self._window]
-      supporting_methods = set([P.method for P in prev_pos])
-
-      if len(supporting_methods) < support_threshold:
-        idx += 1
-        continue
-
-      # If we reach this point, we know we've found a cluster member. It and
-      # all breakpoints preceding it within the window will be in prev_pos.
-      # Now, we must find the following positions, which we store in next_pos.
-      nidx = idx + 1
-      remaining_window = pos.pos - prev_pos[0].pos
-      assert 0 <= remaining_window <= self._window
-      next_pos = []
-      while nidx < end_idx and positions[nidx].pos - pos.pos <= remaining_window:
-        assert positions[nidx].pos >= pos.pos
-        if self._should_use_bp(positions[nidx], postype):
-          next_pos.append(positions[nidx])
-        nidx += 1
-
-      cluster = prev_pos + next_pos
-      cluster = sorted(cluster, key = lambda P: (P.pos, P.method))
       # Ensure no duplicates.
-      assert len(cluster) == len(set(cluster))
-      yield cluster
-      idx = self._directed_position_indices[cluster[0]]
-      prev_pos = []
+      assert len(set(overlapping)) == num_overlapping
+      # Ensure no method overlaps itself.
+      #print(*(['whoa'] + overlapping), sep='\n')
+      #print(*(['whoa'] + intervals), sep='\n')
+      assert len(set([I.method for I in overlapping])) == num_overlapping
+
+      if num_overlapping >= threshold:
+        threshold_reached = True
+        #print(overlapping)
+      if threshold_reached and num_overlapping < prev_num_overlapping:
+        # One or more methods have dropped out of the intersection, so it's time to report the intersection.
+        # Suppose you encounter intervals from methods in this order: method_A,
+        # method_B, method_C, method_A, method_D. If we report when
+        # num_overlapping drops *or stays the same*, we miss the interval from
+        # method_D, which gives us smaller intersection and more confidence.
+        # Thus, require num_overlapping to drop before reporting.
+        for I in prev_overlapping:
+          intervals.remove(I)
+          assert I not in intervals # Ensure not multiple copies of I in intervals
+        return prev_overlapping
+
+      # Duplicate list.
+      prev_overlapping = list(overlapping)
+      prev_num_overlapping = num_overlapping
+      idx += 1
+
+    return None
 
   def _get_median(self, L):
     # Assumes L is sorted already, since sorting criterion you desire may vary
@@ -363,113 +385,73 @@ class BreakpointClusterer(object):
 
     return sorted(representatives, key = lambda P: (P.pos, P.method))
 
-  def _balance_segments(self, exemplars):
-    # Fix positions so we have no unopened ends or unclosed starts.
-    bad_exemplars = set()
+  def _find_intersecting_intervals(self, intervals, threshold):
+    # Duplicate, as we will be modifying the list.
+    intervals = list(intervals)
+    #print(*(['weiners'] + intervals), sep='\n')
 
-    for chrom in exemplars.keys():
-      expected_postype = 'start'
-      range_start = None
+    assert len(intervals) > 0
+    # Ensure no duplicates.
+    assert len(set(intervals)) == len(intervals)
+    # Ensure no duplicate breakpoints.
+    breakpoints = [bp for I in intervals for bp in I.breakpoints]
+    assert len(set(breakpoints)) == len(breakpoints)
 
-      for exemplar in exemplars[chrom]:
-        if exemplar.postype != expected_postype:
-          bad_exemplars.add(MissingExemplarInterval(
+    for idx in range(len(intervals) - 1):
+      assert intervals[idx].start <= intervals[idx + 1].start
+
+    while True:
+      intersection = self._find_first_intersecting_intervals(intervals, threshold)
+      if intersection is None:
+        return
+      else:
+        yield intersection
+
+  def _compute_intersection(self, intersecting):
+    assert len(intersecting) > 0
+    sorted_by_start = sorted(intersecting, key = lambda I: I.start)
+    sorted_by_end   = sorted(intersecting, key = lambda I: I.end)
+    intersect_start = sorted_by_start[-1].start
+    intersect_end = sorted_by_end[0].end
+    bp = [bp for I in intersecting for bp in I.breakpoints if I.start <= bp.pos <= I.end]
+    return Interval(start = intersect_start, end = intersect_end, breakpoints = frozenset(bp), method = 'intersection')
+
+  def _lol(self, blah):
+    return '\n'.join([str(v) for v in blah])
+
+  def _make_consensus(self, intervals, threshold):
+    consensus = {}
+
+    for chrom in intervals.keys():
+      consensus[chrom] = []
+
+      for intersecting_intervals in self._find_intersecting_intervals(intervals[chrom], threshold):
+        intersection = self._compute_intersection(intersecting_intervals)
+        if len(intersection.breakpoints) > 0:
+          points = sorted(intersection.breakpoints, key = lambda P: (P.pos, P.postype == 'start'))
+          representatives = self._find_method_representatives(points)
+          consensus[chrom].append(self._get_median(representatives))
+          print('Bingo', self._lol(intersecting_intervals),  intersection, self._get_median(representatives), sep='\n')
+        else:
+          # We have no breakpoints in the interval, so we just take the 5' end of the interval.
+          bp = Position(
             chrom = chrom,
-            start_idx = range_start,
-            end_idx = self._directed_position_indices[exemplar],
-            expected_postype = expected_postype
-          ))
-        range_start = self._directed_position_indices[exemplar] + 1
-        expected_postype = (exemplar.postype == 'start' and 'end' or 'start')
+            pos = intersection.start,
+            postype = 'undirected',
+            method = 'added_from_intersection'
+          )
+          consensus[chrom].append(bp)
+          print('Got nothing for', intersection, 'so added', bp)
 
-      # Must special-case last breakpoint on chromosome.
-      if exemplars[chrom][-1].postype != 'end':
-        bad_exemplars.add(MissingExemplarInterval(
-          chrom = chrom,
-          start_idx = range_start,
-          end_idx = None,
-          expected_postype = 'end'
-        ))
+      consensus[chrom].sort(key = lambda P: P.pos)
+      for idx in range(len(consensus[chrom]) - 1):
+        assert consensus[chrom][idx].pos <= consensus[chrom][idx + 1].pos
 
-    for bad_exemplar in bad_exemplars:
-      balancer_found = False
-      for reduced_support_threshold in reversed(range(1, self._support_threshold + 1)):
-        for balancer in self._find_clusters(
-          bad_exemplar.chrom,
-          bad_exemplar.expected_postype,
-          reduced_support_threshold,
-          bad_exemplar.start_idx,
-          bad_exemplar.end_idx
-        ):
-          log('Found', balancer, 'in', bad_exemplar, 'with', reduced_support_threshold, self._support_threshold)
-          yield balancer
-          balancer_found = True
-        if balancer_found:
-          break
-      #assert balancer_found is True, ('No balancing cluster found for %s' % str(bad_exemplar))
+    return consensus
 
-  def _draw_exemplar_from_cluster(self, cluster):
-    method_repr = self._find_method_representatives(cluster)
-    for member in method_repr:
-      self.used_bps[member] = method_repr
-    exemplar = self._get_median(method_repr)
-    chrom = exemplar.chrom
-    self._exemplars[chrom].append(exemplar)
-
-  def _remove_redundant(self):
-    for chrom in self._exemplars.keys():
-      exemplars = self._exemplars[chrom]
-
-      idx = len(exemplars) - 1
-      while idx > 0:
-        while exemplars[idx].pos == exemplars[idx - 1].pos:
-          # Remove element at idx.
-          log('Removing redundant %s because %s' % (exemplars[idx], exemplars[idx - 1]))
-          exemplars = exemplars[:idx] + exemplars[(idx + 1):]
-          idx -= 1
-        idx -= 1
-
-      self._exemplars[chrom] = exemplars
-
-  def _check_sanity(self):
-    for chrom in self._exemplars.keys():
-      exemplars = self._exemplars[chrom]
-      #assert exemplars[0].postype == 'start', ('Exemplar %s on chrom %s is not start' % (exemplars[0], chrom))
-      #assert exemplars[-1].postype == 'end', ('Exemplar %s on chrom %s is not end' % (exemplars[-1], chrom))
-      for idx in range(len(exemplars) - 1):
-        assert exemplars[idx].pos <= exemplars[idx + 1].pos
-      # Ideally, I could also check to see whether the breakpoints in between
-      # the first and last alternate between opening and closing, but they
-      # won't -- as we may add multiple new breakpoints in the case of a tie
-      # when balancing, we won't preserve this alternating property.
-
-  def cluster(self):
-    self._exemplars = defaultdict(list)
-    self.used_bps = {}
-
-    for chrom in self.directed_positions.keys():
-      for postype in ('start', 'end'):
-        for cluster in self._find_clusters(chrom, postype, self._support_threshold):
-          self._draw_exemplar_from_cluster(cluster)
-
-      # The list currently consists of all the start points, followed by all
-      # the endpoints. We want to sort by position so we can figure out when we
-      # have unclosed starts and unopened ends.
-      self._exemplars[chrom] = sorted(self._exemplars[chrom], key = lambda P: P.pos)
-
-      # Remove chromosomes with no breakpoints.
-      if len(self._exemplars[chrom]) == 0:
-        del self._exemplars[chrom]
-
-    for cluster in self._balance_segments(self._exemplars):
-      self._draw_exemplar_from_cluster(cluster)
-
-    sort_pos(self._exemplars)
-    # Remove breakpoints at same position -- e.g., because an end and then a
-    # start occur on top of each other.
-    self._exemplars = BreakpointFilter().remove_adjacent(self._exemplars, threshold=0)
-    self._check_sanity()
-    return self._exemplars
+  def make_consensus(self):
+    intervals = self._make_intervals(self._cncalls, int(0.5*self._window), int(0.5*self._window))
+    return self._make_consensus(intervals, self._support_threshold)
 
 class StructVarIntegrator(object):
   def __init__(self, sv_filename):
@@ -516,6 +498,8 @@ class StructVarIntegrator(object):
 
   def integrate(self, exemplars, window):
     for chrom in self._sv.keys():
+      if chrom not in exemplars:
+        exemplars[chrom] = []
       num_initial_exemplars = len(exemplars[chrom])
       chrom_exemplars = set(exemplars[chrom])
       matches, unmatched_svs = self._match_svs_to_exemplar(self._sv[chrom], chrom_exemplars, window)
@@ -784,22 +768,24 @@ def main():
   for method, cnvs in cn_calls.items():
     cn_calls[method] = CnvOrganizer(cnvs).organize()
 
-  bc = BreakpointClusterer(cn_calls, args.window_size, args.support_threshold)
-  exemplars = bc.cluster()
+  cm = ConsensusMaker(cn_calls, args.window_size, args.support_threshold)
+  consensus = cm.make_consensus()
+  #print(consensus)
+  #raise Exception('lol')
 
   svi = StructVarIntegrator(args.sv_fn)
-  svi.integrate(exemplars, args.window_size)
+  svi.integrate(consensus, args.window_size)
 
   centromere_and_telomere_threshold = 1e6
   adjacent_threshold = 1e4
   centromeres = CentromereParser().load(args.centromere_fn)
-  CentromereAndTelomereBreaker(centromere_and_telomere_threshold).add_breakpoints(exemplars, centromeres)
-  filtered = BreakpointFilter().remove_adjacent(exemplars, adjacent_threshold)
+  CentromereAndTelomereBreaker(centromere_and_telomere_threshold).add_breakpoints(consensus, centromeres)
+  filtered = BreakpointFilter().remove_adjacent(consensus, adjacent_threshold)
   filtered = BreakpointFilter().remove_sex(filtered)
 
   ow = OutputWriter()
   ow.write_consensus(filtered, args.consensus_bp_fn)
-  ow.write_details(filtered, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
+  #ow.write_details(filtered, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
