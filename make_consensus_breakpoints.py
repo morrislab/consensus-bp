@@ -48,7 +48,7 @@ class CnvFileParser(object):
         try:
           cnv = {
             'chrom': row['chromosome'].upper(),
-            'start': int(row['start']),
+            'start': int(float(row['start'])),
             # mustonen, at least, produces fully closed intervals -- i.e.,
             # [start, end]. (We know this because some intervals will start and
             # end at the same coordinate.) We want half-open -- i.e., [start,
@@ -66,7 +66,7 @@ class CnvFileParser(object):
             # Note we're assuming that all methods produce fully-closed
             # intervals, which we convert to half-open. This assumption may be
             # wrong.
-            'end': int(row['end']) + 1,
+            'end': int(float(row['end'])) + 1,
           }
           if 'clonal_frequency' in row:
             cnv['cell_prev'] = float(row['clonal_frequency'])
@@ -281,7 +281,6 @@ class ConsensusMaker(object):
       sorted_intervals = sorted(method_intervals[method], key = lambda I: I.end - I.start)
       for interval_rank, interval in enumerate(sorted_intervals):
         interval_score = 1.0 - (float(interval_rank) / len(sorted_intervals))
-        print('whoa', method, interval, interval_score)
         for bp in interval.breakpoints:
           bp_scores[bp] = interval_score
 
@@ -392,25 +391,6 @@ class ConsensusMaker(object):
 
     return None
 
-  def _get_median(self, L):
-    # Assumes L is sorted already, since sorting criterion you desire may vary
-    # from list to list.
-    # If len(L) is even, this will return the lower element (e.g., if len(L) = 4,
-    # this returns L[1] rather than L[2]).
-    idx = int((len(L) - 0.5) / 2)
-    return L[idx]
-
-  def _find_method_representatives(self, cluster):
-    partitioned = defaultdict(list)
-    for pos in cluster:
-      partitioned[pos.method].append(pos)
-
-    representatives = set()
-    for method in partitioned.keys():
-      representatives.add(partitioned[method][0])
-
-    return sorted(representatives, key = lambda P: (P.pos, P.method))
-
   def _find_intersecting_intervals(self, intervals, threshold):
     # Duplicate, as we will be modifying the list.
     intervals = list(intervals)
@@ -455,9 +435,8 @@ class ConsensusMaker(object):
         intersection = self._compute_intersection(intersecting_intervals)
         if len(intersection.breakpoints) > 0:
           # Take breakpoint with highest score, which corresponds to smallest gap in associated interval.
-          consensus_bp = sorted(intersection.breakpoints, key = lambda bp: bp_scores[bp])[-1]
+          consensus_bp = sorted(intersection.breakpoints, key = lambda bp: (bp_scores[bp], bp.postype == 'start'))[-1]
           consensus[chrom].append(consensus_bp)
-          print('Bingo', self._lol(intersecting_intervals), intersection, consensus_bp, sep='\n')
         else:
           # We have no breakpoints in the interval, so we just take the 5' end of the interval.
           bp = Position(
@@ -596,6 +575,19 @@ class OutputWriter(object):
 
     return posmap
 
+  def _create_posmap(self, bps):
+    posmap = defaultdict(lambda: defaultdict(list))
+    for chrom in bps.keys():
+      for bp in bps[chrom]:
+        entry = {
+          'postype': bp.postype,
+          'pos': bp.pos,
+          'method': bp.method,
+          'associates': []
+        }
+        posmap['consensus'][chrom].append(entry)
+    return posmap
+
   def _add_svs_to_posmap(self, posmap, used_bps, matched_sv_to_bp, unmatched_sv):
     for usv in unmatched_sv:
       entry = {
@@ -664,10 +656,18 @@ class OutputWriter(object):
 
         posmap['consensus'][chrom].append(entry)
 
-  def write_details(self, exemplars, bps, used_bps, matched_sv_to_bp, unmatched_sv, methods, outfn):
+  def write_details_old(self, exemplars, matched_sv_to_bp, unmatched_sv, methods, outfn):
     posmap = self._create_posmap(bps, used_bps)
     self._add_svs_to_posmap(posmap, used_bps, matched_sv_to_bp, unmatched_sv)
     self._add_exemplars_to_posmap(posmap, exemplars, used_bps, matched_sv_to_bp)
+    with open(outfn, 'w') as outf:
+      json.dump({
+        'methods': list(methods),
+        'bp': posmap,
+      }, outf)
+
+  def write_details(self, bps, methods, outfn):
+    posmap = self._create_posmap(bps)
     with open(outfn, 'w') as outf:
       json.dump({
         'methods': list(methods),
@@ -682,7 +682,7 @@ class OutputWriter(object):
           print(chrom, exemplar.pos, sep='\t', file=consensus_bpf)
 
 class BreakpointFilter(object):
-  def remove_adjacent(self, breakpoints, threshold):
+  def remove_proximal(self, breakpoints, threshold):
     filtered = defaultdict(list)
 
     for chrom in breakpoints.keys():
@@ -738,6 +738,21 @@ def sort_pos(positions):
     # Order by postype: ends, then starts, then undirecteds
     positions[chrom].sort(key = lambda P: (P.pos, P.postype == 'undirected', P.postype == 'start', P.method))
 
+def check_sanity(breakpoints, proximity_threshold):
+  def _is_consensus_bp(bp):
+    return not (bp.method in ('chromosome_start', 'chromosome_end', 'centromere_start', 'centromere_end') or bp.method.startswith('sv'))
+
+  for chrom in breakpoints.keys():
+    # Last breakpoint that wasn't centromere/chromosome start/end, and that
+    # wasn't an SV.
+    last_consensus_bp = None
+    for idx in range(len(breakpoints[chrom]) - 1):
+      assert breakpoints[chrom][idx].pos < breakpoints[chrom][idx + 1].pos
+      if last_consensus_bp is not None and _is_consensus_bp(breakpoints[chrom][idx]):
+        assert breakpoints[idx].pos - last_consensus_bp.pos > proximity_threshold
+      if _is_consensus_bp(breakpoints[chrom][idx]):
+        last_consensus_bp = breakpoints[chrom][idx]
+
 def log(*msgs):
   if log.verbose:
     print(*msgs, file=sys.stderr)
@@ -792,27 +807,29 @@ def main():
 
   assert avail_methods.issuperset(required_methods) and len(consensus_methods) >= args.num_needed_methods
 
+  centromere_and_telomere_threshold = 1e6
+  proximity_threshold = 1e4
+
   for method, cnvs in cn_calls.items():
     cn_calls[method] = CnvOrganizer(cnvs).organize()
 
   cm = ConsensusMaker(cn_calls, args.window_size, args.support_threshold)
   consensus = cm.make_consensus()
-  #print(consensus)
-  #raise Exception('lol')
+  consensus = BreakpointFilter().remove_proximal(consensus, proximity_threshold)
 
   svi = StructVarIntegrator(args.sv_fn)
   svi.integrate(consensus, args.window_size)
 
-  centromere_and_telomere_threshold = 1e6
-  adjacent_threshold = 1e4
   centromeres = CentromereParser().load(args.centromere_fn)
   CentromereAndTelomereBreaker(centromere_and_telomere_threshold).add_breakpoints(consensus, centromeres)
-  filtered = BreakpointFilter().remove_adjacent(consensus, adjacent_threshold)
-  filtered = BreakpointFilter().remove_sex(filtered)
+  consensus = BreakpointFilter().remove_sex(consensus)
+
+  check_sanity(consensus)
 
   ow = OutputWriter()
-  ow.write_consensus(filtered, args.consensus_bp_fn)
-  #ow.write_details(filtered, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
+  ow.write_consensus(consensus, args.consensus_bp_fn)
+  ow.write_details(consensus, consensus_methods, args.bp_details_fn)
+  #ow.write_details(consensus, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
