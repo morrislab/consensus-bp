@@ -106,6 +106,7 @@ class StructVarParser(object):
 
   def parse(self):
     sv = defaultdict(list)
+    used_pos = set()
 
     with gzip.open(self._sv_filename) as svf:
       for line in svf:
@@ -125,7 +126,13 @@ class StructVarParser(object):
           info[K] = V
 
         svclass = info['SVCLASS']
-        sv[chrom].append(StructVar(chrom=chrom, pos=pos, svclass=svclass))
+
+        if (chrom, pos) not in used_pos:
+          sv[chrom].append(StructVar(chrom=chrom, pos=pos, svclass=svclass))
+          used_pos.add((chrom, pos))
+
+    for chrom in sv.keys():
+      sv[chrom].sort(key = lambda S: S.pos)
 
     return sv
 
@@ -656,22 +663,13 @@ class OutputWriter(object):
 
         posmap['consensus'][chrom].append(entry)
 
-  def write_details_old(self, exemplars, matched_sv_to_bp, unmatched_sv, methods, outfn):
-    posmap = self._create_posmap(bps, used_bps)
-    self._add_svs_to_posmap(posmap, used_bps, matched_sv_to_bp, unmatched_sv)
-    self._add_exemplars_to_posmap(posmap, exemplars, used_bps, matched_sv_to_bp)
-    with open(outfn, 'w') as outf:
-      json.dump({
-        'methods': list(methods),
-        'bp': posmap,
-      }, outf)
-
-  def write_details(self, bps, methods, outfn):
+  def write_details(self, bps, methods, stats, outfn):
     posmap = self._create_posmap(bps)
     with open(outfn, 'w') as outf:
       json.dump({
         'methods': list(methods),
         'bp': posmap,
+        'stats': stats,
       }, outf)
 
   def write_consensus(self, exemplars, outfn):
@@ -749,9 +747,12 @@ def check_sanity(breakpoints, proximity_threshold):
     for idx in range(len(breakpoints[chrom]) - 1):
       assert breakpoints[chrom][idx].pos < breakpoints[chrom][idx + 1].pos
       if last_consensus_bp is not None and _is_consensus_bp(breakpoints[chrom][idx]):
-        assert breakpoints[idx].pos - last_consensus_bp.pos > proximity_threshold
+        assert breakpoints[chrom][idx].pos - last_consensus_bp.pos > proximity_threshold
       if _is_consensus_bp(breakpoints[chrom][idx]):
         last_consensus_bp = breakpoints[chrom][idx]
+
+def count_bp(bp):
+  return sum([len(V) for V in bp.values()])
 
 def log(*msgs):
   if log.verbose:
@@ -809,13 +810,16 @@ def main():
 
   centromere_and_telomere_threshold = 1e6
   proximity_threshold = 1e4
+  stats = {}
 
   for method, cnvs in cn_calls.items():
     cn_calls[method] = CnvOrganizer(cnvs).organize()
 
   cm = ConsensusMaker(cn_calls, args.window_size, args.support_threshold)
   consensus = cm.make_consensus()
+  stats['before_removing_proximal'] = count_bp(consensus)
   consensus = BreakpointFilter().remove_proximal(consensus, proximity_threshold)
+  stats['after_removing_proximal'] = count_bp(consensus)
 
   svi = StructVarIntegrator(args.sv_fn)
   svi.integrate(consensus, args.window_size)
@@ -824,11 +828,11 @@ def main():
   CentromereAndTelomereBreaker(centromere_and_telomere_threshold).add_breakpoints(consensus, centromeres)
   consensus = BreakpointFilter().remove_sex(consensus)
 
-  check_sanity(consensus)
+  check_sanity(consensus, proximity_threshold)
 
   ow = OutputWriter()
   ow.write_consensus(consensus, args.consensus_bp_fn)
-  ow.write_details(consensus, consensus_methods, args.bp_details_fn)
+  ow.write_details(consensus, consensus_methods, stats, args.bp_details_fn)
   #ow.write_details(consensus, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
 
 if __name__ == '__main__':
