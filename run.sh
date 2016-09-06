@@ -5,7 +5,7 @@ export LC_ALL=C
 module load gnu-parallel/20150822
 OUTDIR=~/work/exultant-pistachio/data/consensus_bp
 SVDIR=~/work/exultant-pistachio/data/sv
-BLACKLIST=~/work/exultant-pistachio/data/misc/blacklist.20160815.txt
+BLACKLIST=~/work/exultant-pistachio/data/misc/blacklist.20160906.txt
 CENTROMERES=~/work/exultant-pistachio/data/misc/cytoBand.txt.gz
 
 cd ~/work/exultant-pistachio/data/cnvs

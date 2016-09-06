@@ -74,6 +74,7 @@ def main():
     cmd += ' --centromere-filename %s' % args.centromere_fn
     cmd += ' --consensus-bps %s/%s.txt' % (args.out_dir, guid)
     cmd += ' --bp-details %s/%s.json' % (args.out_dir, guid)
+    cmd += ' --verbose'
     cmd += ' %s' % cnv_calls
     cmd += ' >%s/%s.stdout' % (args.out_dir, guid)
     cmd += ' 2>%s/%s.stderr' % (args.out_dir, guid)
