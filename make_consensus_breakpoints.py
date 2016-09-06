@@ -6,9 +6,19 @@ import sys
 import json
 from collections import defaultdict, namedtuple
 
-Position = namedtuple('Position', ('chrom', 'pos', 'postype', 'method'))
 StructVar = namedtuple('StructVar', ('chrom', 'pos', 'svclass'))
 Interval = namedtuple('Interval', ('start', 'end', 'breakpoints', 'method'))
+
+class Position(object):
+  # Position was originally a namedtuple, but we want it to be mutable.
+  def __init__(self, chrom, pos, postype, method):
+    self.chrom = chrom
+    self.pos = pos
+    self.postype = postype
+    self.method = method
+
+  def __str__(self):
+    return 'chr%s(%s, %s, %s)' % (self.chrom, self.pos, self.postype, self.method)
 
 # Taken from https://genome.ucsc.edu/goldenpath/help/hg19.chrom.sizes.
 CHROM_LENS = {
@@ -166,17 +176,19 @@ class CentromereParser(object):
 class CentromereAndTelomereBreaker(object):
   def __init__(self, threshold = 1e6):
     self._threshold = threshold
+    self.inside_centromere = 0
 
-  def add_breakpoints(self, positions, centromeres):
+  def _add(self, positions, centromeres):
     # Exclude chrY, since males lack it.
     chroms = set(CHROM_LENS.keys()) - set(['Y'])
 
     for chrom in chroms:
+      centromere_start, centromere_end = centromeres[chrom]
       points = {
         'chrom_start': 1,
         'chrom_end': CHROM_LENS[chrom],
-        'centromere_start': centromeres[chrom][0],
-        'centromere_end': centromeres[chrom][1]
+        'centromere_start': centromere_start,
+        'centromere_end': centromere_end,
       }
       presence = {k: None for k in points.keys()}
 
@@ -199,6 +211,34 @@ class CentromereAndTelomereBreaker(object):
           method = ptype,
         ))
 
+  def _move_invalid(self, positions, centromeres):
+    for chrom in positions.keys():
+      centromere_start, centromere_end = centromeres[chrom]
+
+      for pos in positions[chrom]:
+        if pos.pos < 1:
+          log('%s is before chromosome start. Moving to 1.' % pos)
+          pos.pos = 1
+        elif pos.pos > CHROM_LENS[chrom]:
+          log('%s is after chromosome end. Moving to %s.' % CHROM_LENS[chrom])
+          pos.pos = CHROM_LENS[chrom]
+        elif centromere_start < pos.pos < centromere_end:
+          closest_dist = float('inf')
+          cloeset_point = None
+          for point in (centromere_start, centromere_end):
+            dist = abs(pos.pos - point)
+            if dist < closest_dist:
+              closest_dist = dist
+              closest_point = point
+          assert closest_point is not None
+          log('%s is inside centromere (%s, %s). Moving to %s.' % (pos, centromere_start, centromere_end, closest_point))
+          self.inside_centromere += 1
+          pos.pos = closest_point
+
+  def add_breakpoints(self, positions, centromeres, associate_tracker):
+    self._associate_tracker = associate_tracker
+    self._move_invalid(positions, centromeres)
+    self._add(positions, centromeres)
     sort_pos(positions)
 
 class CnvOrganizer(object):
@@ -242,10 +282,12 @@ class CnvOrganizer(object):
     return self._cnvs
 
 class ConsensusMaker(object):
-  def __init__(self, cncalls, window, support_threshold):
+  def __init__(self, cncalls, window, support_threshold, associate_tracker):
     self._cncalls = cncalls
     self._window = window
     self._support_threshold = support_threshold
+    self.cna_pos = defaultdict(dict)
+    self._associate_tracker = associate_tracker
 
   def _sort_intervals(self, intervals):
     return sorted(intervals, key = lambda I: I.start)
@@ -268,6 +310,7 @@ class ConsensusMaker(object):
         for idx in range(len(positions) - 1):
           assert positions[idx].pos <= positions[idx + 1].pos
         intervals[chrom] += self._make_chrom_intervals(positions, chrom, upstream_window, downstream_window)
+        self.cna_pos[method][chrom] = positions
 
       intervals[chrom] = self._sort_intervals(intervals[chrom])
 
@@ -429,9 +472,6 @@ class ConsensusMaker(object):
     bp = [bp for I in intersecting for bp in I.breakpoints if I.start <= bp.pos <= I.end]
     return Interval(start = intersect_start, end = intersect_end, breakpoints = frozenset(bp), method = 'intersection')
 
-  def _lol(self, blah):
-    return '\n'.join([str(v) for v in blah])
-
   def _make_consensus(self, intervals, bp_scores, threshold):
     consensus = {}
 
@@ -440,20 +480,22 @@ class ConsensusMaker(object):
 
       for intersecting_intervals in self._find_intersecting_intervals(intervals[chrom], threshold):
         intersection = self._compute_intersection(intersecting_intervals)
+        associated_pos = [P for I in intersecting_intervals for P in I.breakpoints]
+
         if len(intersection.breakpoints) > 0:
           # Take breakpoint with highest score, which corresponds to smallest gap in associated interval.
           consensus_bp = sorted(intersection.breakpoints, key = lambda bp: (bp_scores[bp], bp.postype == 'start'))[-1]
-          consensus[chrom].append(consensus_bp)
         else:
           # We have no breakpoints in the interval, so we just take the 5' end of the interval.
-          bp = Position(
+          consensus_bp = Position(
             chrom = chrom,
             pos = intersection.start,
             postype = 'undirected',
             method = 'added_from_intersection'
           )
-          consensus[chrom].append(bp)
-          print('Got nothing for', intersection, 'so added', bp)
+        consensus[chrom].append(consensus_bp)
+        for apos in associated_pos:
+          self._associate_tracker.add(consensus_bp, apos)
 
       consensus[chrom].sort(key = lambda P: P.pos)
       for idx in range(len(consensus[chrom]) - 1):
@@ -467,10 +509,9 @@ class ConsensusMaker(object):
     return self._make_consensus(intervals, bp_scores, self._support_threshold)
 
 class StructVarIntegrator(object):
-  def __init__(self, sv_filename):
+  def __init__(self, sv_filename, associate_tracker):
     self._sv = StructVarParser(sv_filename).parse()
-    self.matched_sv_to_bp = {}
-    self.unmatched_sv = []
+    self._associate_tracker = associate_tracker
 
   def _find_closest_exemplar(self, sv, exemplars, window):
     closest_exemplar = None
@@ -520,15 +561,8 @@ class StructVarIntegrator(object):
       num_added = 0
 
       for matched_sv, matched_exemplar in matches:
-        moved = Position(
-          chrom = chrom,
-          pos = matched_sv.pos,
-          postype = matched_exemplar.postype,
-          method = 'sv_%s' % matched_exemplar.method
-        )
-        chrom_exemplars.remove(matched_exemplar)
-        chrom_exemplars.add(moved)
-        self.matched_sv_to_bp[moved] = matched_exemplar
+        matched_exemplar.pos = matched_sv.pos
+        matched_exemplar.method = 'sv_%s' % matched_exemplar.method
         num_moved += 1
 
       for unmatched_sv in unmatched_svs:
@@ -538,7 +572,6 @@ class StructVarIntegrator(object):
           # a DUP and t2tINV). If this occurs, proceed no further so that our
           # count of the SVs added remains accurate.
           continue
-        self.unmatched_sv.append(sv_bp)
         chrom_exemplars.add(sv_bp)
         num_added += 1
 
@@ -547,129 +580,56 @@ class StructVarIntegrator(object):
 
     sort_pos(exemplars)
 
+class AssociateTracker(object):
+  def __init__(self):
+    self._ass = defaultdict(set)
+
+  def _keyify(self, pos):
+    return '_'.join([str(v) for v in (pos.method, pos.postype, pos.chrom, pos.pos)])
+
+  def add(self, pos1, pos2):
+    if pos1 == pos2:
+      # Silently ignore attempts to associate a position with itself.
+      return
+    self._ass[pos1].add(pos2)
+    self._ass[pos2].add(pos1)
+
+  def remove(self, pos):
+    for other in self._ass[pos]:
+      self._ass[other].remove(pos)
+    del self._ass[pos]
+
+  def get_associates(self):
+    stringified = {}
+    for pos in self._ass.keys():
+      stringified[self._keyify(pos)] = [self._keyify(P) for P in self._ass[pos]]
+    return stringified
+
 class OutputWriter(object):
-  def _create_associate(self, bp):
-    return {
-      'method': bp.method,
-      'postype': bp.postype,
-      'chrom': bp.chrom,
-      'pos': bp.pos,
-    }
+  def __init__(self):
+    self._posmap = defaultdict(lambda: defaultdict(list))
 
-  def _create_posmap(self, bps, used_bps):
-    posmap = defaultdict(lambda: defaultdict(list))
-    self._bp_to_entry_map = {}
-
-    for chrom in bps.keys():
-      for bp in bps[chrom]:
+  def _add_positions_to_posmap(self, method, positions):
+    for chrom in positions.keys():
+      for pos in positions[chrom]:
         entry = {
-          'postype': bp.postype,
-          'pos': bp.pos,
-          'method': bp.method,
-          'associates': []
+          'postype': pos.postype,
+          'pos': pos.pos,
+          'method': pos.method,
         }
+        self._posmap[method][chrom].append(entry)
 
-        if bp in used_bps:
-          for associate in used_bps[bp]:
-            assert associate.chrom == bp.chrom
-            assert associate.postype == bp.postype
-            entry['associates'].append(self._create_associate(associate))
-        else:
-          entry['associates'].append(self._create_associate(bp))
+  def write_details(self, consensus, cna_pos, methods, stats, associate_tracker, outfn):
+    self._add_positions_to_posmap('consensus', consensus)
+    for method, pos in cna_pos.items():
+      self._add_positions_to_posmap(method, pos)
 
-        self._bp_to_entry_map[bp] = entry
-        posmap[bp.method][chrom].append(entry)
-
-    return posmap
-
-  def _create_posmap(self, bps):
-    posmap = defaultdict(lambda: defaultdict(list))
-    for chrom in bps.keys():
-      for bp in bps[chrom]:
-        entry = {
-          'postype': bp.postype,
-          'pos': bp.pos,
-          'method': bp.method,
-          'associates': []
-        }
-        posmap['consensus'][chrom].append(entry)
-    return posmap
-
-  def _add_svs_to_posmap(self, posmap, used_bps, matched_sv_to_bp, unmatched_sv):
-    for usv in unmatched_sv:
-      entry = {
-        'postype': 'undirected',
-        'pos': usv.pos,
-        'method': usv.method,
-        'associates': []
-      }
-      posmap['sv'][usv.chrom].append(entry)
-      self._bp_to_entry_map[usv] = entry
-
-    for msv, mbp in matched_sv_to_bp.items():
-      matched_bps = used_bps[mbp]
-      entry = {
-        'postype': 'undirected',
-        'pos': msv.pos,
-        'method': msv.method,
-        'associates': [self._create_associate(bp) for bp in matched_bps]
-      }
-      posmap['sv'][msv.chrom].append(entry)
-      self._bp_to_entry_map[msv] = entry
-
-      for bp in matched_bps:
-        entry = self._bp_to_entry_map[bp]
-        entry['associates'].append({
-          'method': 'sv',
-          'postype': 'undirected',
-          'chrom': msv.chrom,
-          'pos': msv.pos,
-          })
-
-  def _add_exemplars_to_posmap(self, posmap, exemplars, used_bps, matched_sv_to_bp):
-    for chrom in exemplars.keys():
-      for exemplar in exemplars[chrom]:
-        entry = {
-          'postype': exemplar.postype,
-          'pos': exemplar.pos,
-          'method': exemplar.method,
-          'associates': []
-        }
-        exemplar_associate = self._create_associate(exemplar)
-        # Override this, since 'method' field no longer corresponds to
-        # something on plot.
-        exemplar_associate['method'] = 'consensus'
-
-        if exemplar.method.startswith('sv_'):
-          before_move = matched_sv_to_bp[exemplar]
-          before_bp = used_bps[before_move]
-          after_associates = [self._create_associate(bp) for bp in before_bp] + [exemplar_associate]
-          for bp in before_bp:
-            self._bp_to_entry_map[bp]['associates'] = after_associates
-          entry['associates'] = after_associates
-        elif exemplar.method == 'sv':
-          entry['associates'].append(self._create_associate(exemplar))
-          sv_entry = self._bp_to_entry_map[exemplar]
-          sv_entry['associates'].append(exemplar_associate)
-        else:
-          if exemplar in used_bps:
-            associate_bps = used_bps[exemplar]
-          else:
-            associate_bps = []
-          associates = [self._create_associate(bp) for bp in associate_bps] + [exemplar_associate]
-          entry['associates'] = associates
-          for bp in associate_bps:
-            self._bp_to_entry_map[bp]['associates'] = associates
-
-        posmap['consensus'][chrom].append(entry)
-
-  def write_details(self, bps, methods, stats, outfn):
-    posmap = self._create_posmap(bps)
     with open(outfn, 'w') as outf:
       json.dump({
         'methods': list(methods),
-        'bp': posmap,
+        'bp': self._posmap,
         'stats': stats,
+        'associates': associate_tracker.get_associates(),
       }, outf)
 
   def write_consensus(self, exemplars, outfn):
@@ -680,8 +640,9 @@ class OutputWriter(object):
           print(chrom, exemplar.pos, sep='\t', file=consensus_bpf)
 
 class BreakpointFilter(object):
-  def remove_proximal(self, breakpoints, threshold):
+  def remove_proximal(self, breakpoints, threshold, associate_tracker):
     filtered = defaultdict(list)
+    removed = set()
 
     for chrom in breakpoints.keys():
       points = breakpoints[chrom]
@@ -690,6 +651,8 @@ class BreakpointFilter(object):
       while idx > 0:
         while idx > 0 and points[idx].pos - points[idx - 1].pos <= threshold:
           # Remove element at idx.
+          removed.add(points[idx])
+          associate_tracker.remove(points[idx])
           log('Removing %s because of preceding %s' % (points[idx], points[idx - 1]))
           points = points[:idx] + points[(idx + 1):]
           idx -= 1
@@ -697,7 +660,7 @@ class BreakpointFilter(object):
 
       filtered[chrom] = points
 
-    return filtered
+    return (filtered, removed)
 
   def remove_sex(self, breakpoints):
     filtered = defaultdict(list)
@@ -737,19 +700,11 @@ def sort_pos(positions):
     positions[chrom].sort(key = lambda P: (P.pos, P.postype == 'undirected', P.postype == 'start', P.method))
 
 def check_sanity(breakpoints, proximity_threshold):
-  def _is_consensus_bp(bp):
-    return not (bp.method in ('chromosome_start', 'chromosome_end', 'centromere_start', 'centromere_end') or bp.method.startswith('sv'))
-
   for chrom in breakpoints.keys():
-    # Last breakpoint that wasn't centromere/chromosome start/end, and that
-    # wasn't an SV.
-    last_consensus_bp = None
+    last_bp = None
     for idx in range(len(breakpoints[chrom]) - 1):
       assert breakpoints[chrom][idx].pos < breakpoints[chrom][idx + 1].pos
-      if last_consensus_bp is not None and _is_consensus_bp(breakpoints[chrom][idx]):
-        assert breakpoints[chrom][idx].pos - last_consensus_bp.pos > proximity_threshold
-      if _is_consensus_bp(breakpoints[chrom][idx]):
-        last_consensus_bp = breakpoints[chrom][idx]
+      assert breakpoints[chrom][idx + 1].pos - breakpoints[chrom][idx].pos > proximity_threshold
 
 def count_bp(bp):
   return sum([len(V) for V in bp.values()])
@@ -809,31 +764,37 @@ def main():
   assert avail_methods.issuperset(required_methods) and len(consensus_methods) >= args.num_needed_methods
 
   centromere_and_telomere_threshold = 1e6
-  proximity_threshold = 1e4
+  # Low proximity threshold just removes breakpoints that are far too close to be real.
+  proximity_threshold = 10
   stats = {}
 
   for method, cnvs in cn_calls.items():
     cn_calls[method] = CnvOrganizer(cnvs).organize()
 
-  cm = ConsensusMaker(cn_calls, args.window_size, args.support_threshold)
-  consensus = cm.make_consensus()
-  stats['before_removing_proximal'] = count_bp(consensus)
-  consensus = BreakpointFilter().remove_proximal(consensus, proximity_threshold)
-  stats['after_removing_proximal'] = count_bp(consensus)
+  associate_tracker = AssociateTracker()
 
-  svi = StructVarIntegrator(args.sv_fn)
+  cm = ConsensusMaker(cn_calls, args.window_size, args.support_threshold, associate_tracker)
+  consensus = cm.make_consensus()
+
+  svi = StructVarIntegrator(args.sv_fn, associate_tracker)
   svi.integrate(consensus, args.window_size)
 
   centromeres = CentromereParser().load(args.centromere_fn)
-  CentromereAndTelomereBreaker(centromere_and_telomere_threshold).add_breakpoints(consensus, centromeres)
+  ctb = CentromereAndTelomereBreaker(centromere_and_telomere_threshold)
+  ctb.add_breakpoints(consensus, centromeres, associate_tracker)
+  stats['inside_centromere'] = ctb.inside_centromere
   consensus = BreakpointFilter().remove_sex(consensus)
+
+  stats['before_removing_proximal'] = count_bp(consensus)
+  consensus, removed = BreakpointFilter().remove_proximal(consensus, proximity_threshold, associate_tracker)
+  #stats['proximal_removed'] = list(removed)
+  stats['after_removing_proximal'] = count_bp(consensus)
 
   check_sanity(consensus, proximity_threshold)
 
   ow = OutputWriter()
   ow.write_consensus(consensus, args.consensus_bp_fn)
-  ow.write_details(consensus, consensus_methods, stats, args.bp_details_fn)
-  #ow.write_details(consensus, bc.directed_positions, bc.used_bps, svi.matched_sv_to_bp, svi.unmatched_sv, consensus_methods, args.bp_details_fn)
+  ow.write_details(consensus, cm.cna_pos, consensus_methods, stats, associate_tracker, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
