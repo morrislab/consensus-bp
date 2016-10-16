@@ -54,7 +54,8 @@ def main():
 
     if len(methods_for_guid) < args.num_needed_methods:
       continue
-    support_threshold = int(max(2, math.ceil(len(methods_for_guid) / 2.0)))
+    #support_threshold = int(max(2, math.ceil(len(methods_for_guid) / 2.0)))
+    support_threshold = args.num_needed_methods
     cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in methods_for_guid])
 
     cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/make_consensus_breakpoints.py '

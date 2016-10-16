@@ -78,10 +78,6 @@ class CnvFileParser(object):
             # wrong.
             'end': int(float(row['end'])) + 1,
           }
-          if 'clonal_frequency' in row:
-            cnv['cell_prev'] = float(row['clonal_frequency'])
-          else:
-            cnv['cell_prev'] = None
         except ValueError, e:
           print(e, row, filename, file=sys.stderr)
           continue
@@ -89,9 +85,13 @@ class CnvFileParser(object):
         # 'mustonen*' methods encode X as chr23.
         if cnv['chrom'] == '23':
           cnv['chrom'] = 'X'
+        elif cnv['chrom'] == '24':
+          cnv['chrom'] = 'Y'
+        elif cnv['chrom'] == 'M':
+          continue
 
-        # DKFZ intervals are left-closed, right-open.
-        if 'dkfz/' in filename:
+        # DKFZ intervals are left-closed, right-open, as are Jabba intervals.
+        if 'dkfz/' in filename or 'jabba/' in filename:
           cnv['end'] -= 1
 
         try:
@@ -101,11 +101,6 @@ class CnvFileParser(object):
         except AssertionError, e:
           print(e, file=sys.stderr)
           continue
-        if cnv['cell_prev'] is None or (not (0.0 <= cnv['cell_prev'] <= 1.0)):
-          print('Cellular prevalence is %s in %s' % (cnv['cell_prev'], filename), file=sys.stderr)
-          if cnv['cell_prev'] is not None and cnv['cell_prev'] < 0 or cnv['cell_prev'] >= 1.05:
-            continue
-          cnv['cell_prev'] = 1.0
         cnvs.append(cnv)
 
     return cnvs
@@ -619,7 +614,7 @@ class OutputWriter(object):
         }
         self._posmap[method][chrom].append(entry)
 
-  def write_details(self, consensus, cna_pos, methods, stats, associate_tracker, outfn):
+  def write_details(self, consensus, cna_pos, methods, stats, params, associate_tracker, outfn):
     self._add_positions_to_posmap('consensus', consensus)
     for method, pos in cna_pos.items():
       self._add_positions_to_posmap(method, pos)
@@ -627,6 +622,7 @@ class OutputWriter(object):
     with open(outfn, 'w') as outf:
       json.dump({
         'methods': list(methods),
+        'params': params,
         'bp': self._posmap,
         'stats': stats,
         'associates': associate_tracker.get_associates(),
@@ -792,9 +788,17 @@ def main():
 
   check_sanity(consensus, proximity_threshold)
 
+  params = {
+    'num_needed_methods': args.num_needed_methods,
+    'support_threshold': args.support_threshold,
+    'centromere_and_telomere_threshold': centromere_and_telomere_threshold,
+    'proximity_threshold': proximity_threshold,
+    'window_size': args.window_size,
+  }
+
   ow = OutputWriter()
   ow.write_consensus(consensus, args.consensus_bp_fn)
-  ow.write_details(consensus, cm.cna_pos, consensus_methods, stats, associate_tracker, args.bp_details_fn)
+  ow.write_details(consensus, cm.cna_pos, consensus_methods, stats, params, associate_tracker, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
