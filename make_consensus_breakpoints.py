@@ -20,6 +20,9 @@ class Position(object):
   def __str__(self):
     return 'chr%s(%s, %s, %s)' % (self.chrom, self.pos, self.postype, self.method)
 
+  def __repr__(self):
+    return str(self)
+
 # Taken from https://genome.ucsc.edu/goldenpath/help/hg19.chrom.sizes.
 CHROM_LENS = {
   '1':249250621,
@@ -187,12 +190,13 @@ class CentromereAndTelomereBreaker(object):
       }
       presence = {k: None for k in points.keys()}
 
-      for pos in positions[chrom]:
-        for ptype, point in points.items():
-          if presence[ptype] is not None:
-            continue
-          if abs(point - pos.pos) <= self._threshold:
-            presence[ptype] = pos
+      if chrom in positions.keys():
+        for pos in positions[chrom]:
+          for ptype, point in points.items():
+            if presence[ptype] is not None:
+              continue
+            if abs(point - pos.pos) <= self._threshold:
+              presence[ptype] = pos
 
       for ptype, pos in presence.items():
         if pos is not None:
@@ -468,11 +472,9 @@ class ConsensusMaker(object):
     return Interval(start = intersect_start, end = intersect_end, breakpoints = frozenset(bp), method = 'intersection')
 
   def _make_consensus(self, intervals, bp_scores, threshold):
-    consensus = {}
+    consensus = defaultdict(list)
 
     for chrom in intervals.keys():
-      consensus[chrom] = []
-
       for intersecting_intervals in self._find_intersecting_intervals(intervals[chrom], threshold):
         intersection = self._compute_intersection(intersecting_intervals)
         associated_pos = [P for I in intersecting_intervals for P in I.breakpoints]
