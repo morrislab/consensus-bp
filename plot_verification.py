@@ -68,6 +68,7 @@ def main():
     xerrors.append(np.std(stats['recall']))
     yerrors.append(np.std(stats['precision']))
 
+  show_error_bars = True
   trace = go.Scatter(
     mode = 'markers',
     x = xvals,
@@ -76,12 +77,12 @@ def main():
     error_x = {
       'type': 'data',
       'array': xerrors,
-      'visible': False,
+      'visible': show_error_bars,
     },
     error_y = {
       'type': 'data',
       'array': yerrors,
-      'visible': False,
+      'visible': show_error_bars,
     },
   )
 

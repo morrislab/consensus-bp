@@ -54,6 +54,49 @@ def generate_command(methods, guid, window_size, centromere_fn, sv_dir, out_dir,
     cmd += ' 2>%s/%s.stderr' % (out_dir, guid)
     return cmd
 
+def run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir):
+  for active_mask, active_methods in generate_method_combos(methods_for_guid):
+    outdir = os.path.join(base_outdir, 'methods.%s' % active_mask)
+    if not os.path.exists(outdir):
+      os.makedirs(outdir)
+    cmd = generate_command(
+      active_methods,
+      guid,
+      window_size,
+      centromere_fn,
+      sv_dir,
+      outdir,
+    )
+    if cmd is None:
+      continue
+    try:
+      print(cmd)
+    except IOError, e:
+      assert e.errno == 32
+      return
+
+def run_any_combo(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir):
+  for support_threshold in range(2, len(methods_for_guid) + 1):
+    outdir = os.path.join(base_outdir, 'methods.any%s' % support_threshold)
+    if not os.path.exists(outdir):
+      os.makedirs(outdir)
+    cmd = generate_command(
+      methods_for_guid,
+      guid,
+      window_size,
+      centromere_fn,
+      sv_dir,
+      outdir,
+      support_threshold = support_threshold
+    )
+    if cmd is None:
+      continue
+    try:
+      print(cmd)
+    except IOError, e:
+      assert e.errno == 32
+      return
+
 def main():
   parser = argparse.ArgumentParser(
     description='LOL HI',
@@ -91,46 +134,7 @@ def main():
       continue
     if set(methods_for_guid) != set(methods):
       continue
-
-    for active_mask, active_methods in generate_method_combos(methods_for_guid):
-      outdir = os.path.join(args.out_dir, 'methods.%s' % active_mask)
-      if not os.path.exists(outdir):
-        os.makedirs(outdir)
-      cmd = generate_command(
-        active_methods,
-        guid,
-        args.window_size,
-        args.centromere_fn,
-        args.sv_dir,
-        outdir,
-      )
-      if cmd is None:
-        continue
-      try:
-        print(cmd)
-      except IOError, e:
-        assert e.errno == 32
-        return
-
-    for support_threshold in range(2, len(methods_for_guid) + 1):
-      outdir = os.path.join(args.out_dir, 'methods.any%s' % support_threshold)
-      if not os.path.exists(outdir):
-        os.makedirs(outdir)
-      cmd = generate_command(
-        methods_for_guid,
-        guid,
-        args.window_size,
-        args.centromere_fn,
-        args.sv_dir,
-        outdir,
-        support_threshold = support_threshold
-      )
-      if cmd is None:
-        continue
-      try:
-        print(cmd)
-      except IOError, e:
-        assert e.errno == 32
-        return
+    run_specific_methods(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
+    run_any_combo(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
 
 main()
