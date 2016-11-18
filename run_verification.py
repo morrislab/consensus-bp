@@ -22,37 +22,39 @@ def generate_method_combos(methods):
     # SVs and centromere/telomere boundaries.
     if sum([int(x) for x in active_mask]) == 1:
       continue
+    if sum([int(x) for x in active_mask]) != 4:
+      continue
 
     active_mask = active_mask.zfill(N)
     active_methods = [methods[I] for I, C in enumerate(active_mask) if C == '1']
     yield (active_mask, active_methods)
 
 def generate_command(methods, guid, window_size, centromere_fn, sv_dir, out_dir, support_threshold=None):
-    cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in methods])
+  cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in methods])
 
-    cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/make_consensus_breakpoints.py '
-    cmd += ' --required-methods %s' % (','.join(methods))
-    if support_threshold is None:
-      cmd += ' --support-threshold %s' % len(methods)
-      cmd += ' --num-needed-methods %s' % len(methods)
-    else:
-      cmd += ' --support-threshold %s' % support_threshold
-      cmd += ' --num-needed-methods %s' % support_threshold
-    cmd += ' --dataset-name %s' % guid
+  cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/make_consensus_breakpoints.py '
+  cmd += ' --required-methods %s' % (','.join(methods))
+  if support_threshold is None:
+    cmd += ' --support-threshold %s' % len(methods)
+    cmd += ' --num-needed-methods %s' % len(methods)
+  else:
+    cmd += ' --support-threshold %s' % support_threshold
+    cmd += ' --num-needed-methods %s' % support_threshold
+  cmd += ' --dataset-name %s' % guid
 
-    sv_path = glob.glob(os.path.join(sv_dir, '%s.*.sv.vcf.gz' % guid))
-    if len(sv_path) != 1:
-      return None
-    cmd += ' --window-size %s' % window_size
-    cmd += ' --sv-filename %s' % sv_path[0]
-    cmd += ' --centromere-filename %s' % centromere_fn
-    cmd += ' --consensus-bps %s/%s.txt' % (out_dir, guid)
-    cmd += ' --bp-details %s/%s.json' % (out_dir, guid)
-    cmd += ' --verbose'
-    cmd += ' %s' % cnv_calls
-    cmd += ' >%s/%s.stdout' % (out_dir, guid)
-    cmd += ' 2>%s/%s.stderr' % (out_dir, guid)
-    return cmd
+  sv_path = glob.glob(os.path.join(sv_dir, '%s.*.sv.vcf.gz' % guid))
+  if len(sv_path) != 1:
+    return None
+  cmd += ' --window-size %s' % window_size
+  cmd += ' --sv-filename %s' % sv_path[0]
+  cmd += ' --centromere-filename %s' % centromere_fn
+  cmd += ' --consensus-bps %s/%s.txt' % (out_dir, guid)
+  cmd += ' --bp-details %s/%s.json' % (out_dir, guid)
+  cmd += ' --verbose'
+  cmd += ' %s' % cnv_calls
+  cmd += ' >%s/%s.stdout' % (out_dir, guid)
+  cmd += ' 2>%s/%s.stderr' % (out_dir, guid)
+  return cmd
 
 def run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir):
   for active_mask, active_methods in generate_method_combos(methods_for_guid):
@@ -134,7 +136,8 @@ def main():
       continue
     if set(methods_for_guid) != set(methods):
       continue
+
     run_specific_methods(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
-    run_any_combo(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
+    #run_any_combo(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
 
 main()

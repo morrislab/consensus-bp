@@ -7,14 +7,14 @@ module load gnu-parallel/20150822
 SVDIR=~/work/exultant-pistachio/data/sv
 BLACKLIST=~/work/exultant-pistachio/data/misc/blacklist.20160906.txt
 CENTROMERES=~/work/exultant-pistachio/data/misc/cytoBand.txt.gz
-OUTDIR=~/work/exultant-pistachio/data/consensus_bp.verify
+OUTDIR=~/work/exultant-pistachio/data/consensus_bp.verify.post_sv
 PLOTDIR=$OUTDIR/plots
-methods="broad dkfz mustonen095 peifer vanloo_wedge"
+methods="broad dkfz jabba mustonen095 peifer vanloo_wedge_segs"
 
 function create {
   mkdir -p $OUTDIR && rm -rf $OUTDIR/methods.*
 
-  cd ~/work/exultant-pistachio/data/cnvs.verify
+  cd ~/work/exultant-pistachio/data/cnvs.pre_consensus_bp
 
   python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/run_verification.py \
     --blacklist $BLACKLIST \
@@ -42,7 +42,7 @@ function evaluate {
 
 function main {
   create
-  evaluate
+  #evaluate
 }
 
 main
