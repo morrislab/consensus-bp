@@ -443,7 +443,6 @@ class ConsensusMaker(object):
   def _find_intersecting_intervals(self, intervals, threshold):
     # Duplicate, as we will be modifying the list.
     intervals = list(intervals)
-    #print(*(['weiners'] + intervals), sep='\n')
 
     assert len(intervals) > 0
     # Ensure no duplicates.
