@@ -88,7 +88,7 @@ def main():
         name = run,
       ))
 
-  show_error_bars = True
+  show_error_bars = False
   trace = go.Scatter(
     mode = 'markers',
     x = xvals,

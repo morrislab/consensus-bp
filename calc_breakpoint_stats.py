@@ -310,6 +310,7 @@ def main():
   for fn in sys.argv[2:]:
     stats = calc_stats(fn, cents_and_telos)
     print(*[stats[T] for T in stat_types], sep='\t')
+    continue
 
     dataset = stats['dataset']
     prop_bp_away[dataset] = (stats['num_bp_away_from_sv_and_cents_and_telos'], stats['prop_bp_away_from_sv_and_cents_and_telos'])
@@ -320,6 +321,7 @@ def main():
         for ap in stats['bp_away_from_sv_and_cents_and_telos'][chrom]:
           relpos = calc_relpos(chrom, ap['pos'])
           bp_away_from_sv_and_cents_and_telos.append((dataset, relpos))
+  return
 
   plot_distance_to_svs(stats['dists_to_svs'])
   plot_bp_away_positions(bp_away_from_sv_and_cents_and_telos, cents_and_telos)

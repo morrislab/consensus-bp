@@ -55,6 +55,8 @@ def print_safely(S):
   # Account for EOF generated on STDOUT when output piped to "head" or
   # whatever.
   try:
+    if S is None:
+      return
     print(S)
   except IOError, e:
     assert e.errno == 32
@@ -70,7 +72,7 @@ def run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_
     if not os.path.exists(outdir):
       os.makedirs(outdir)
     cmd = generate_command(
-      active_methods,
+      methods_for_guid,
       guid,
       window_size,
       centromere_fn,
@@ -78,8 +80,6 @@ def run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_
       outdir,
       (active_mask,)
     )
-    if cmd is None:
-      continue
     print_safely(cmd)
 
 def run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, N):
@@ -172,12 +172,7 @@ def main():
       guid = segfile.split('/')[1].split('_')[0]
       segfiles_by_guid[guid].append(method)
 
-  cnt = 0
   for guid, methods_for_guid in segfiles_by_guid.items():
-    cnt += 1
-    if cnt > 2:
-      break
-
     if guid in blacklist:
       continue
     if set(methods_for_guid) != set(methods):
@@ -185,14 +180,14 @@ def main():
 
     run_specific_methods(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
 
-    for N in range(3, len(methods) + 1):
+    for N in range(2, len(methods) + 1):
       run_any_N(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir, N)
 
     for must_include_one in (
       set(('broad', 'peifer')),
-      set(('broad', 'vanloo_wedge_segs')),
-      set(('peifer', 'vanloo_wedge_segs')),
-      set(('broad', 'peifer', 'vanloo_wedge_segs')),
+      set(('broad', 'vanloo_wedge')),
+      set(('peifer', 'vanloo_wedge')),
+      set(('broad', 'peifer', 'vanloo_wedge')),
     ):
       assert must_include_one.issubset(methods_for_guid)
       run_hybrid(
