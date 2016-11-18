@@ -5,7 +5,7 @@ def main():
   for line in sys.stdin:
     guid, methods = line.split()
     methods = methods.split(',')
-    if len(methods) < 5:
+    if len(methods) < 4:
       print(guid, methods)
     #if len(methods) >= 5:
       #print(line.strip())
