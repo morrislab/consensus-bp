@@ -72,7 +72,7 @@ def main():
   common = sorted(set(old_vals.keys()) & set(new_vals.keys()))
   new_tumors = sorted(new_vals.keys())
 
-  for metric in ('prop_bp_away_from_sv_and_cents_and_telos', 'prop_sv_with_proximal_bp', 'num_total_bp'):
+  for metric in ('num_bp_away_from_sv', 'prop_bp_away_from_sv_and_cents_and_telos', 'prop_sv_with_proximal_bp', 'num_total_bp'):
     xvals = [float(old_vals[D][metric]) for D in common]
     yvals = [float(new_vals[D][metric]) for D in common]
     assert len(xvals) == len(yvals)
