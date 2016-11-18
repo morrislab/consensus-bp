@@ -13,6 +13,7 @@ def parse_stats(statsfn):
     'tp': [],
     'fp': [],
     'fn': [],
+    'datasets': [],
   }
 
   with open(statsfn) as F:
@@ -21,8 +22,9 @@ def parse_stats(statsfn):
       stats['tp'].append(float(row['num_bp_replaced_by_sv']))
       stats['fp'].append(float(row['num_non_sv']))
       stats['fn'].append(float(row['num_lone_sv']))
+      stats['datasets'].append(row['dataset'])
 
-  for K in stats.keys():
+  for K in ('tp', 'fp', 'fn'):
     stats[K] = np.array(stats[K], dtype=np.float)
 
   stats['precision'] = stats['tp'] / (stats['tp'] + stats['fp'])
@@ -41,12 +43,13 @@ def parse_stats(statsfn):
 
   return stats
 
-def scatter(traces, title, xtitle, ytitle, outfn):
+def scatter(traces, title, xtitle, ytitle, outfn, logx = False):
   layout = go.Layout(
     title = title,
     hovermode = 'closest',
     xaxis = {
       'title': xtitle,
+      'type': logx and 'log' or 'linear',
     },
     yaxis = {
       'title': ytitle,
@@ -55,9 +58,16 @@ def scatter(traces, title, xtitle, ytitle, outfn):
   fig = go.Figure(data=traces, layout=layout)
   plotly.offline.plot(fig, filename=outfn)
 
+def cdf(arr):
+  return (np.sort(arr), np.linspace(0, 1, len(arr), endpoint=False))
+
 def main():
   xvals, yvals, xerrors, yerrors = [], [], [], []
   runs = []
+
+  precision_traces = []
+  recall_traces = []
+  numbp_traces = []
 
   for statsfn in sys.argv[1:]:
     run = os.path.basename(statsfn).split('.')[1]
@@ -67,6 +77,16 @@ def main():
     yvals.append(np.mean(stats['precision']))
     xerrors.append(np.std(stats['recall']))
     yerrors.append(np.std(stats['precision']))
+
+    for collection, vals in ((recall_traces, stats['recall']), (precision_traces, stats['precision']), (numbp_traces, stats['tp'] + stats['fp'])):
+      X, Y = cdf(vals)
+      collection.append(go.Scatter(
+        mode='lines+markers',
+        x = X,
+        y = Y,
+        text = stats['datasets'],
+        name = run,
+      ))
 
   show_error_bars = True
   trace = go.Scatter(
@@ -92,6 +112,28 @@ def main():
     'Recall',
     'Precision',
     'method_combos_perf.html',
+  )
+  scatter(
+    precision_traces,
+    'Precision ECDF',
+    'Precision',
+    'ECDF(x)',
+    'precision_ecdf.html',
+  )
+  scatter(
+    recall_traces,
+    'Recall ECDF',
+    'Recall',
+    'ECDF(x)',
+    'recall_ecdf.html',
+  )
+  scatter(
+    numbp_traces,
+    '# BPs ECDF',
+    '# BPs',
+    'ECDF(x)',
+    'numbp_ecdf.html',
+    logx = True,
   )
 
 main()
