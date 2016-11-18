@@ -281,10 +281,10 @@ class CnvOrganizer(object):
     return self._cnvs
 
 class ConsensusMaker(object):
-  def __init__(self, cncalls, window, support_threshold, associate_tracker):
+  def __init__(self, cncalls, window, support_methods, associate_tracker):
     self._cncalls = cncalls
     self._window = window
-    self._support_threshold = support_threshold
+    self._support_methods = support_methods
     self.cna_pos = defaultdict(dict)
     self._associate_tracker = associate_tracker
 
@@ -385,7 +385,7 @@ class ConsensusMaker(object):
 
     return all_intervals
 
-  def _find_first_intersecting_intervals(self, intervals, threshold):
+  def _find_first_intersecting_intervals(self, intervals, support_methods):
     # As we halt after we find the first intersection, we don't need to handle
     # resetting these values in the loop after we find an intersection. This is
     # why I wrote both _intersect and _find_first_intersection.
@@ -416,11 +416,13 @@ class ConsensusMaker(object):
       # Ensure no method overlaps itself.
       #print(*(['whoa'] + overlapping), sep='\n')
       #print(*(['whoa'] + intervals), sep='\n')
-      assert len(set([I.method for I in overlapping])) == num_overlapping
+      overlapping_methods = set([I.method for I in overlapping])
+      assert len(overlapping_methods) == num_overlapping
 
-      if num_overlapping >= threshold:
-        threshold_reached = True
-        #print(overlapping)
+      for M in support_methods:
+        if M.issubset(overlapping_methods):
+          threshold_reached = True
+          break
       if threshold_reached and num_overlapping < prev_num_overlapping:
         # One or more methods have dropped out of the intersection, so it's time to report the intersection.
         # Suppose you encounter intervals from methods in this order: method_A,
@@ -440,7 +442,7 @@ class ConsensusMaker(object):
 
     return None
 
-  def _find_intersecting_intervals(self, intervals, threshold):
+  def _find_intersecting_intervals(self, intervals, support_methods):
     # Duplicate, as we will be modifying the list.
     intervals = list(intervals)
 
@@ -455,7 +457,7 @@ class ConsensusMaker(object):
       assert intervals[idx].start <= intervals[idx + 1].start
 
     while True:
-      intersection = self._find_first_intersecting_intervals(intervals, threshold)
+      intersection = self._find_first_intersecting_intervals(intervals, support_methods)
       if intersection is None:
         return
       else:
@@ -470,11 +472,11 @@ class ConsensusMaker(object):
     bp = [bp for I in intersecting for bp in I.breakpoints if I.start <= bp.pos <= I.end]
     return Interval(start = intersect_start, end = intersect_end, breakpoints = frozenset(bp), method = 'intersection')
 
-  def _make_consensus(self, intervals, bp_scores, threshold):
+  def _make_consensus(self, intervals, bp_scores, support_methods):
     consensus = defaultdict(list)
 
     for chrom in intervals.keys():
-      for intersecting_intervals in self._find_intersecting_intervals(intervals[chrom], threshold):
+      for intersecting_intervals in self._find_intersecting_intervals(intervals[chrom], support_methods):
         intersection = self._compute_intersection(intersecting_intervals)
         associated_pos = [P for I in intersecting_intervals for P in I.breakpoints]
 
@@ -502,7 +504,7 @@ class ConsensusMaker(object):
   def make_consensus(self):
     intervals = self._make_intervals(self._cncalls, int(0.5*self._window), int(0.5*self._window))
     bp_scores = self._score_breakpoints(intervals)
-    return self._make_consensus(intervals, bp_scores, self._support_threshold)
+    return self._make_consensus(intervals, bp_scores, self._support_methods)
 
 class StructVarIntegrator(object):
   def __init__(self, sv_filename, associate_tracker):
@@ -711,6 +713,21 @@ def log(*msgs):
     print(*msgs, file=sys.stderr)
 log.verbose = False
 
+def generate_supported_methods(support_masks, consensus_methods):
+  support_masks = list(set(support_masks.split(',')))
+  S = sorted(consensus_methods)
+  support_methods = set()
+
+  for mask in support_masks:
+    support = set()
+    assert len(mask) == len(consensus_methods)
+    for idx, bit in enumerate(mask):
+      if bit == '1':
+        support.add(S[idx])
+    support_methods.add(frozenset(support))
+
+  return support_methods
+
 def main():
   parser = argparse.ArgumentParser(
     description='LOL HI THERE',
@@ -724,8 +741,8 @@ def main():
     help='Number of available (optional or required) methods necessary to establish consensus')
   parser.add_argument('--window-size', dest='window_size', type=int, default=5000,
     help='Window within which breakpoints must be placed to be considered equivalent')
-  parser.add_argument('--support-threshold', dest='support_threshold', type=int, default=4,
-    help='Number of methods that must support a cluster to place a consensus breakpoint within it')
+  parser.add_argument('--support-masks', dest='support_masks', required=True,
+    help='Binary masks indicating which methods must support a breakpoint to place a consensus breakpoint')
   parser.add_argument('--dataset-name', dest='dataset_name', required=True,
     help='Dataset name')
   parser.add_argument('--sv-filename', dest='sv_fn', required=True,
@@ -769,8 +786,9 @@ def main():
     cn_calls[method] = CnvOrganizer(cnvs).organize()
 
   associate_tracker = AssociateTracker()
+  support_methods = generate_supported_methods(args.support_masks, consensus_methods)
 
-  cm = ConsensusMaker(cn_calls, args.window_size, args.support_threshold, associate_tracker)
+  cm = ConsensusMaker(cn_calls, args.window_size, support_methods, associate_tracker)
   consensus = cm.make_consensus()
 
   svi = StructVarIntegrator(args.sv_fn, associate_tracker)
@@ -791,7 +809,8 @@ def main():
 
   params = {
     'num_needed_methods': args.num_needed_methods,
-    'support_threshold': args.support_threshold,
+    'support_masks': args.support_masks,
+    'support_methods': [list(E) for E in support_methods],
     'centromere_and_telomere_threshold': centromere_and_telomere_threshold,
     'proximity_threshold': proximity_threshold,
     'window_size': args.window_size,
