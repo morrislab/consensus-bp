@@ -7,7 +7,6 @@ from collections import defaultdict
 import numpy as np
 
 import plotly
-import plotly.plotly as py
 import plotly.graph_objs as go
 
 def exclude_near(breakpoints, around, threshold):
@@ -35,6 +34,14 @@ def extract_non_sv(breakpoints):
 
 def extract_bp_replaced_by_sv(breakpoints):
   return extract(breakpoints, 'sv_', True)
+
+def extract_lone_svs(breakpoints):
+  retained = defaultdict(list)
+  for chrom in breakpoints.keys():
+    for bp in breakpoints[chrom]:
+      if bp['method'] == 'sv':
+        retained[chrom].append(bp)
+  return retained
 
 def extract(breakpoints, prefix, truth):
   retained = defaultdict(list)
@@ -107,10 +114,13 @@ def calc_stats(fn, cents_and_telos):
 
     away_from_cents_and_telos = exclude_near(bp, cents_and_telos, 1e6)
     svs = extract_all_sv(away_from_cents_and_telos)
+    away_from_sv = exclude_near(bp, svs, 1e5)
     away_from_sv_and_cents_and_telos = exclude_near(away_from_cents_and_telos, svs, 1e5)
     non_svs = extract_non_sv(away_from_cents_and_telos)
     assert count_bp(svs) + count_bp(non_svs) == count_bp(away_from_cents_and_telos)
     bp_replaced_by_sv = extract_bp_replaced_by_sv(away_from_cents_and_telos)
+    lone_svs = extract_lone_svs(away_from_cents_and_telos)
+    assert count_bp(bp_replaced_by_sv) + count_bp(lone_svs) == count_bp(svs)
     assert count_bp(bp_replaced_by_sv) <= count_bp(svs)
 
     dists_to_svs = {}
@@ -118,16 +128,19 @@ def calc_stats(fn, cents_and_telos):
       if method == 'consensus':
         continue
       dists_to_svs[method] = calc_dists_to_svs(J['bp'][method], extract_all_sv(bp))
-    plot_distance_to_svs(dists_to_svs)
 
     stats = {
       'dataset': dataset,
-      'num_bp_away_from_sv_and_cents_and_telos': count_bp(away_from_sv_and_cents_and_telos),
       'bp_away_from_sv_and_cents_and_telos': away_from_sv_and_cents_and_telos,
+      'dists_to_svs': dists_to_svs,
+      'num_bp_away_from_sv_and_cents_and_telos': count_bp(away_from_sv_and_cents_and_telos),
       'num_bp_away_from_cents_and_telos': count_bp(away_from_cents_and_telos),
+      'num_bp_away_from_sv': count_bp(away_from_sv),
       'num_total_bp': count_bp(bp),
+      'num_bp_replaced_by_sv': count_bp(bp_replaced_by_sv),
+      'num_lone_sv': count_bp(lone_svs),
+      'num_non_sv': count_bp(non_svs),
     }
-
 
     if count_bp(away_from_cents_and_telos) == 0:
       assert count_bp(away_from_sv_and_cents_and_telos) == 0
@@ -271,6 +284,7 @@ def plot_bp_away_positions(away_points, cents_and_telos):
   )
 
 
+
 def main():
   centromeres = CentromereParser().load(sys.argv[1])
   cents_and_telos = parse_centromeres_and_telomeres(centromeres)
@@ -284,8 +298,12 @@ def main():
     'num_bp_away_from_sv_and_cents_and_telos',
     'prop_bp_away_from_sv_and_cents_and_telos',
     'num_bp_away_from_cents_and_telos',
+    'num_bp_away_from_sv',
     'num_total_bp',
     'prop_sv_with_proximal_bp',
+    'num_bp_replaced_by_sv',
+    'num_lone_sv',
+    'num_non_sv',
   )
   print(*stat_types, sep='\t')
 
@@ -297,13 +315,13 @@ def main():
     prop_bp_away[dataset] = (stats['num_bp_away_from_sv_and_cents_and_telos'], stats['prop_bp_away_from_sv_and_cents_and_telos'])
     prop_sv_away[dataset] = 1 - stats['prop_sv_with_proximal_bp']
 
-
     if prop_bp_away[dataset] >= 0.95:
       for chrom in stats['bp_away_from_sv_and_cents_and_telos']:
         for ap in stats['bp_away_from_sv_and_cents_and_telos'][chrom]:
           relpos = calc_relpos(chrom, ap['pos'])
           bp_away_from_sv_and_cents_and_telos.append((dataset, relpos))
 
+  plot_distance_to_svs(stats['dists_to_svs'])
   plot_bp_away_positions(bp_away_from_sv_and_cents_and_telos, cents_and_telos)
   plot_sv_away_from_bp_props(prop_sv_away)
   plot_bp_away_props(prop_bp_away)
