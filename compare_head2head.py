@@ -148,26 +148,21 @@ def sort_pos(positions):
   for chrom in positions.keys():
     positions[chrom].sort(key = lambda P: (P.pos, P.method))
 
-def compare_to_consensus(consensus_bp, cmp_bp, cents_and_telos, all_methods):
-  cent_telo_threshold = 1e6
-  consensus_threshold = 1e5
+def prepare_bp(bp, cents_and_telos, cent_telo_threshold):
+  stats = {'all_bp': count_bp(bp)}
+  bp = exclude_near(bp, cents_and_telos, cent_telo_threshold)
+  stats['away_from_cents_and_telos'] = count_bp(bp)
+  bp = extract(bp, 'sv', False)
+  stats['away_from_sv_and_cents_and_telos'] = count_bp(bp)
+  return (bp, stats)
 
-  consensus_bp = exclude_near(consensus_bp, cents_and_telos, cent_telo_threshold)
-  original_count = count_bp(consensus_bp)
-  sv = extract(consensus_bp, 'sv', True)
-
-  # Remove SVs from consensus_bp.
-  consensus_bp = extract(consensus_bp, 'sv', False)
-  assert count_bp(consensus_bp) + count_bp(sv) == original_count
-
-  # Remove SVs from cmp_bp.
-  cmp_bp = extract(cmp_bp, 'sv', False)
-
+def compare_to_consensus(consensus_bp, cmp_bp, all_methods):
   # Ensure no centromeres, telomeres, or SVs remain.
   for chrom in cmp_bp.keys():
     for bp in cmp_bp[chrom]:
       assert bp.method in all_methods
 
+  consensus_threshold = 1e5
   # TP: non-SV BPs that appear in both comparison and consensus set
   # FP: non-SV BPs that appear in comparison set but not consensus set
   # FN: non-SV BPs that appear in consensus set but not comparison set
@@ -176,52 +171,60 @@ def compare_to_consensus(consensus_bp, cmp_bp, cents_and_telos, all_methods):
   fn = Matcher().subtract(consensus_bp, cmp_bp, consensus_threshold)
   assert count_bp(tp) + count_bp(fp) == count_bp(cmp_bp)
 
-  return {
-    'tp': count_bp(tp),
-    'fp': count_bp(fp),
-    'fn': count_bp(fn),
-  }
+  stats = {}
+  stats['tp'] = count_bp(tp)
+  stats['fp'] = count_bp(fp)
+  stats['fn'] = count_bp(fn)
+  return stats
 
 def compare_methods(bp, guid, cmp_methods, consensus_methods, all_methods, cents_and_telos, indiv_bps):
   assert set(bp.keys()) == consensus_methods | set(['consensus'])
   assert consensus_methods | cmp_methods == all_methods
   best_precision_score = float('-inf')
   best_recall_score = float('-inf')
+  most_bp_count = -1
   best_precision_method = None
   best_recall_method = None
+  most_bp_method = None
+
+  cent_telo_threshold = 1e6
+  stats = {}
+  consensus_bp, stats['consensus'] = prepare_bp(bp['consensus'], cents_and_telos, cent_telo_threshold)
 
   for cmp_method in cmp_methods:
-    scores = compare_to_consensus(bp['consensus'], indiv_bps[cmp_method], cents_and_telos, all_methods)
+    cmp_bp, stats[cmp_method] = prepare_bp(indiv_bps[cmp_method], cents_and_telos, cent_telo_threshold)
+
+    cmp_stats = compare_to_consensus(consensus_bp, cmp_bp, all_methods)
+    stats[cmp_method].update(cmp_stats)
+
     try:
-      precision = scores['tp'] / float(scores['tp'] + scores['fp'])
-      recall = scores['tp'] / float(scores['tp'] + scores['fn'])
+      precision = cmp_stats['tp'] / float(cmp_stats['tp'] + cmp_stats['fp'])
+      recall = cmp_stats['tp'] / float(cmp_stats['tp'] + cmp_stats['fn'])
+      stats[cmp_method]['precision'] = precision
+      stats[cmp_method]['recall'] = recall
+
       if precision > best_precision_score:
         best_precision_score = precision
         best_precision_method = cmp_method
       if recall > best_recall_score:
         best_recall_score = recall
         best_recall_method = cmp_method
+      if stats[cmp_method]['away_from_sv_and_cents_and_telos'] > most_bp_count:
+        most_bp_count = stats[cmp_method]['away_from_sv_and_cents_and_telos']
+        most_bp_method = cmp_method
     except ZeroDivisionError:
-      return
+      stats[cmp_method]['precision'] = None
+      stats[cmp_method]['recall'] = None
+      return (stats, None, None, None)
 
   assert 0 <= best_precision_score <= 1
   assert 0 <= best_recall_score <= 1
-  return (best_precision_method, best_recall_method)
+  assert most_bp_count >= 0
+  return (stats, best_precision_method, best_recall_method, most_bp_method)
 
-def main():
-  all_methods = sys.argv[1]
-  centromeres = CentromereParser().load(sys.argv[2])
-  runs = sys.argv[3:]
-
-  cents_and_telos = parse_centromeres_and_telomeres(centromeres)
-  all_methods = set(all_methods.split(','))
-  datasets = defaultdict(list)
-
+def load_runs(runs, all_methods):
   results = defaultdict(dict)
   indiv_bps = defaultdict(dict)
-
-  precision_winners = defaultdict(lambda: defaultdict(int))
-  recall_winners = defaultdict(lambda: defaultdict(int))
 
   for run in runs:
     resultfns = glob.glob('%s/*-*.json' % run)
@@ -230,8 +233,8 @@ def main():
 
       dirname = os.path.dirname(R)
       assert dirname.startswith('methods.')
-      method_combo = dirname.split('.')[1]
-      cmp_methods, consensus_methods = determine_methods(method_combo, all_methods)
+      method_vector = dirname.split('.')[1]
+      cmp_methods, consensus_methods = determine_methods(method_vector, all_methods)
 
       results[R] = {
         'guid': guid,
@@ -245,36 +248,71 @@ def main():
           continue
         indiv_bps[guid][method] = bp[method]
 
+  return (results, indiv_bps)
+
+def determine_winners(results, all_methods, cents_and_telos, indiv_bps):
+  precision_winners = defaultdict(lambda: defaultdict(int))
+  recall_winners = defaultdict(lambda: defaultdict(int))
+  # TOTAL DOMINATION!!!
+  total_dom_winners = defaultdict(lambda: defaultdict(int))
+  most_bp = defaultdict(lambda: defaultdict(int))
+  stats = {}
+
   for resultfn, result in results.items():
     cmp_methods = result['cmp_methods']
+    consensus_methods = result['consensus_methods']
     guid = result['guid']
-    winners = compare_methods(
+
+    stats[resultfn], precision_winner, recall_winner, most_bp_method = compare_methods(
       load_breakpoints(resultfn),
       guid,
       cmp_methods,
-      result['consensus_methods'],
+      consensus_methods,
       all_methods,
       cents_and_telos,
       indiv_bps[guid],
     )
+    stats[resultfn]['consensus_methods'] = sorted(consensus_methods)
+    stats[resultfn]['cmp_methods'] = sorted(cmp_methods)
 
-    if winners is None:
+    if precision_winner is None or recall_winner is None or most_bp_method is None:
       continue
-    precision_winner, recall_winner = winners
     precision_winners[cmp_methods][precision_winner] += 1
     recall_winners[cmp_methods][recall_winner] += 1
+    most_bp[cmp_methods][most_bp_method] += 1
+    if precision_winner == recall_winner:
+      total_dom_winners[cmp_methods][precision_winner] += 1
 
+  return (stats, precision_winners, recall_winners, total_dom_winners, most_bp)
+
+def generate_output(stats, precision_winners, recall_winners, total_dom_winners, most_bp):
   # Can't dump sets via JSON.
-  for result in (precision_winners, recall_winners):
+  for result in (precision_winners, recall_winners, total_dom_winners, most_bp):
     keys = list(result.keys())
     for K in keys:
       converted = ','.join(sorted(K))
       result[converted] = result[K]
       del result[K]
 
-  print(json.dumps({
+  return json.dumps({
     'precision_winners': precision_winners,
     'recall_winners': recall_winners,
-  }))
+    'total_domination_winners': total_dom_winners,
+    'most_bp': most_bp,
+    'stats': stats,
+  })
+
+def main():
+  all_methods = sys.argv[1]
+  centromeres = CentromereParser().load(sys.argv[2])
+  runs = sys.argv[3:]
+
+  cents_and_telos = parse_centromeres_and_telomeres(centromeres)
+  all_methods = set(all_methods.split(','))
+  datasets = defaultdict(list)
+
+  results, indiv_bps = load_runs(runs, all_methods)
+  stats, precision_winners, recall_winners, total_dom_winners, most_bp = determine_winners(results, all_methods, cents_and_telos, indiv_bps)
+  print(generate_output(stats, precision_winners, recall_winners, total_dom_winners, most_bp))
 
 main()
