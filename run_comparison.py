@@ -18,7 +18,7 @@ def main():
     help='Methods that must be present to include entire dataset and each segment within as part of consensus')
   parser.add_argument('--optional-methods', dest='optional_methods',
     help='Methods that will be incorporated if available')
-  parser.add_argument('--num-needed-methods', dest='num_needed_methods', type=int, default=3,
+  parser.add_argument('--num-needed-methods', dest='num_needed_methods', type=int, default=-1,
     help='Number of available (optional or required) methods necessary to establish consensus')
   parser.add_argument('--window-size', dest='window_size', type=int, default=5000,
     help='Window within which breakpoints must be placed to be considered equivalent')
@@ -43,19 +43,16 @@ def main():
       guid = segfile.split('/')[1].split('_')[0]
       segfiles_by_guid[guid].append(method)
 
-  cnt = 0
   for guid, methods_for_guid in segfiles_by_guid.items():
-    cnt += 1
-    if cnt > 5 and False:
-      break
-
     if guid in blacklist:
       continue
 
-    if len(methods_for_guid) < args.num_needed_methods:
+    N = args.num_needed_methods
+    if N < 0:
+      # Dynamic
+      N = max(3, len(methods_for_guid) - 2)
+    if len(methods_for_guid) < N:
       continue
-    #support_threshold = int(max(2, math.ceil(len(methods_for_guid) / 2.0)))
-    support_threshold = args.num_needed_methods
     cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in methods_for_guid])
 
     cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/make_consensus_breakpoints.py '
@@ -63,8 +60,8 @@ def main():
       cmd += ' --required-methods %s' % args.required_methods
     if args.optional_methods:
       cmd += ' --optional-methods %s' % args.optional_methods
-    cmd += ' --num-needed-methods %s' % args.num_needed_methods
-    cmd += ' --support-threshold %s' % support_threshold
+    cmd += ' --num-needed-methods %s' % N
+    cmd += ' --support-threshold %s' % N
     cmd += ' --dataset-name %s' % guid
 
     sv_path = glob.glob(os.path.join(args.sv_dir, '%s.*.sv.vcf.gz' % guid))
