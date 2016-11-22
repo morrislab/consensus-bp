@@ -6,8 +6,8 @@ from make_consensus_breakpoints import CentromereParser, CHROM_LENS
 from collections import defaultdict
 import numpy as np
 
-import plotly
-import plotly.graph_objs as go
+#import plotly
+#import plotly.graph_objs as go
 
 def exclude_near(breakpoints, around, threshold):
   retained = defaultdict(list)
@@ -22,6 +22,27 @@ def exclude_near(breakpoints, around, threshold):
           closest_dist = dist
           closest_other = other
       if closest_dist > threshold:
+        retained[chrom].append(bp)
+
+  return retained
+
+def include_near(breakpoints, around, threshold):
+  # Note this method *will* include all breakpoints in `around`, which, for our
+  # present purposes, is the desired behaviour.
+  retained = defaultdict(list)
+
+  for chrom in breakpoints.keys():
+    for bp in breakpoints[chrom]:
+      closest_dist = float('inf')
+      closest_other = None
+      for other in around[chrom]:
+        dist = abs(bp['pos'] - other['pos'])
+        if dist < closest_dist:
+          # This is inefficient -- I should just break out of the parent loop
+          # -- but whatever.
+          closest_dist = dist
+          closest_other = other
+      if closest_dist <= threshold:
         retained[chrom].append(bp)
 
   return retained
@@ -115,7 +136,9 @@ def calc_stats(fn, cents_and_telos):
     away_from_cents_and_telos = exclude_near(bp, cents_and_telos, 1e6)
     svs = extract_all_sv(away_from_cents_and_telos)
     away_from_sv = exclude_near(bp, svs, 1e5)
+    near_sv_away_from_cents_and_telos = include_near(away_from_cents_and_telos, svs, 1e5)
     away_from_sv_and_cents_and_telos = exclude_near(away_from_cents_and_telos, svs, 1e5)
+    assert count_bp(away_from_sv_and_cents_and_telos) + count_bp(near_sv_away_from_cents_and_telos) == count_bp(away_from_cents_and_telos)
     non_svs = extract_non_sv(away_from_cents_and_telos)
     assert count_bp(svs) + count_bp(non_svs) == count_bp(away_from_cents_and_telos)
     bp_replaced_by_sv = extract_bp_replaced_by_sv(away_from_cents_and_telos)
@@ -140,6 +163,7 @@ def calc_stats(fn, cents_and_telos):
       'num_bp_replaced_by_sv': count_bp(bp_replaced_by_sv),
       'num_lone_sv': count_bp(lone_svs),
       'num_non_sv': count_bp(non_svs),
+      'num_bp_near_sv_away_from_cents_and_telos': count_bp(near_sv_away_from_cents_and_telos),
     }
 
     if count_bp(away_from_cents_and_telos) == 0:
