@@ -16,14 +16,6 @@ def generate_method_combos(methods):
   for idx in range(1, 2**N):
     active_mask = bin(idx)[2:] # Remove '0b' prefix
 
-    # Skip cases of only one method, since they won't produce any breakpoints.
-    # Our consensus BP algorithm places intervals around each breakpoint, then
-    # finds intersections between those intervals. A lone method won't have any
-    # intersections with just itself, and so won't produce any BPs except for
-    # SVs and centromere/telomere boundaries.
-    if sum([int(x) for x in active_mask]) == 1:
-      continue
-
     active_mask = active_mask.zfill(N)
     active_methods = [methods[I] for I, C in enumerate(active_mask) if C == '1']
     yield (active_mask, active_methods)
@@ -109,7 +101,7 @@ def run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_o
   )
   print_safely(cmd)
 
-def run_hybrid(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, must_include_one, run_name):
+def run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, should_use, run_name):
   '''Combine any3 with any2, in which the any2 are seleected from a certain set of "reliable" methods.'''
   outdir = os.path.join(base_outdir, 'methods.%s' % run_name)
   if not os.path.exists(outdir):
@@ -119,14 +111,7 @@ def run_hybrid(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_
 
   for active_mask, active_methods in generate_method_combos(methods_for_guid):
     num_active = sum([int(x) for x in active_mask])
-
-    include = False
-    if num_active >= 3:
-      include = True
-    elif num_active == 2 and len(set(active_methods) & must_include_one) > 0:
-      include = True
-
-    if include:
+    if should_use(num_active, active_methods):
       masks.add(active_mask)
 
   cmd = generate_command(
@@ -190,15 +175,33 @@ def main():
       set(('broad', 'peifer', 'vanloo_wedge')),
     ):
       assert must_include_one.issubset(methods_for_guid)
-      run_hybrid(
+      should_use = lambda num_active, active_methods: \
+        (num_active >= 3) or \
+        (num_active == 2 and len(set(active_methods) & must_include_one) > 0)
+      run_custom(
         guid,
         methods_for_guid,
         args.window_size,
         args.centromere_fn,
         args.sv_dir,
         args.out_dir,
-        must_include_one,
-        'any3_any2_%s' % ','.join(must_include_one)
+        should_use,
+        'any3_any2_include_%s' % ','.join(must_include_one)
       )
+
+    conservative_methods = set(('broad', 'peifer', 'vanloo_wedge'))
+    should_use = lambda num_active, active_methods: \
+      (num_active >= 3) or \
+      (num_active == 2 and set(active_methods).issubset(conservative_methods))
+    run_custom(
+      guid,
+      methods_for_guid,
+      args.window_size,
+      args.centromere_fn,
+      args.sv_dir,
+      args.out_dir,
+      should_use,
+      'any3_any2_conservative'
+    )
 
 main()
