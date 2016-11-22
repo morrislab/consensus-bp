@@ -28,7 +28,7 @@ function create {
 }
 
 function evaluate {
-  mkdir -p $PLOTDIR && rm -f $PLOTDIR/stats.*
+  mkdir -p $PLOTDIR && rm -f $PLOTDIR/stats.* $PLOTDIR/*.html
   cd $OUTDIR
 
   for run in methods.*; do
