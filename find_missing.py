@@ -72,8 +72,9 @@ def main():
     write_set((remaining & svs) - samples[method], 'missing.%s.has_sv.txt' % method)
     write_set((remaining - svs) - samples[method], 'missing.%s.no_sv.txt' % method)
     write_set(samples[method] - all_samples, 'extra.%s.txt' % method)
+  write_set(released - all_samples, 'extra.consensus.txt')
 
-  for S in sorted(remaining):
+  for S in sorted(all_samples):
     present = set()
     for M in samples.keys():
       if S in samples[M]:
