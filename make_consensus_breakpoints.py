@@ -767,7 +767,7 @@ def main():
     help='Binary masks indicating which methods must support a breakpoint to place a consensus breakpoint')
   parser.add_argument('--dataset-name', dest='dataset_name', required=True,
     help='Dataset name')
-  parser.add_argument('--sv-filename', dest='sv_fn', required=True,
+  parser.add_argument('--sv-filename', dest='sv_fn',
     help='Consensus structural variants filename (VCF format)')
   parser.add_argument('--centromere-filename', dest='centromere_fn', required=True,
       help='File containing centromeres (e.g., http://hgdownload.cse.ucsc.edu/goldenPath/hg19/database/cytoBand.txt.gz)')
@@ -813,8 +813,9 @@ def main():
   cm = ConsensusMaker(cn_calls, args.window_size, support_methods, associate_tracker)
   consensus = cm.make_consensus()
 
-  svi = StructVarIntegrator(args.sv_fn, associate_tracker)
-  svi.integrate(consensus, args.window_size)
+  if args.sv_fn is not None:
+    svi = StructVarIntegrator(args.sv_fn, associate_tracker)
+    svi.integrate(consensus, args.window_size)
 
   centromeres = CentromereParser().load(args.centromere_fn)
   ctb = CentromereAndTelomereBreaker(centromere_and_telomere_threshold)
