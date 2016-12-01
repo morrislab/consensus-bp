@@ -1,3 +1,4 @@
+from __future__ import print_function, division
 import argparse
 import glob
 import os
@@ -16,20 +17,13 @@ def generate_method_combos(methods):
   for idx in range(1, 2**N):
     active_mask = bin(idx)[2:] # Remove '0b' prefix
 
-    # Skip cases of only one method, since they won't produce any breakpoints.
-    # Our consensus BP algorithm places intervals around each breakpoint, then
-    # finds intersections between those intervals. A lone method won't have any
-    # intersections with just itself, and so won't produce any BPs except for
-    # SVs and centromere/telomere boundaries.
-    if sum([int(x) for x in active_mask]) == 1:
-      continue
-
     active_mask = active_mask.zfill(N)
     active_methods = [methods[I] for I, C in enumerate(active_mask) if C == '1']
     yield (active_mask, active_methods)
 
 def generate_command(methods, guid, window_size, centromere_fn, sv_dir, out_dir, support_masks):
-  cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in methods])
+  cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in sorted(methods)])
+  assert len(support_masks) > 0
 
   cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/make_consensus_breakpoints.py '
   cmd += ' --required-methods %s' % (','.join(methods))
@@ -55,6 +49,8 @@ def print_safely(S):
   # Account for EOF generated on STDOUT when output piped to "head" or
   # whatever.
   try:
+    if S is None:
+      return
     print(S)
   except IOError, e:
     assert e.errno == 32
@@ -66,11 +62,13 @@ def nCr(n,r):
 
 def run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir):
   for active_mask, active_methods in generate_method_combos(methods_for_guid):
-    outdir = os.path.join(base_outdir, 'methods.%s' % active_mask)
+    if len(active_methods) != 1:
+      continue
+    outdir = os.path.join(base_outdir, 'methods.%s' % (active_methods[0]))
     if not os.path.exists(outdir):
       os.makedirs(outdir)
     cmd = generate_command(
-      active_methods,
+      methods_for_guid,
       guid,
       window_size,
       centromere_fn,
@@ -78,12 +76,17 @@ def run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_
       outdir,
       (active_mask,)
     )
-    if cmd is None:
-      continue
     print_safely(cmd)
 
-def run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, N):
+def run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, N, exclude=None):
+  if exclude is None:
+    exclude = set()
+  methods_for_guid = set(methods_for_guid) - exclude
+  assert N <= len(methods_for_guid)
+
   outdir = os.path.join(base_outdir, 'methods.any%s' % N)
+  if len(exclude) > 0:
+    outdir += '_exclude_' + ','.join(sorted(exclude))
   if not os.path.exists(outdir):
     os.makedirs(outdir)
 
@@ -109,7 +112,7 @@ def run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_o
   )
   print_safely(cmd)
 
-def run_hybrid(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, must_include_one, run_name):
+def run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, should_use, run_name):
   '''Combine any3 with any2, in which the any2 are seleected from a certain set of "reliable" methods.'''
   outdir = os.path.join(base_outdir, 'methods.%s' % run_name)
   if not os.path.exists(outdir):
@@ -119,14 +122,7 @@ def run_hybrid(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_
 
   for active_mask, active_methods in generate_method_combos(methods_for_guid):
     num_active = sum([int(x) for x in active_mask])
-
-    include = False
-    if num_active >= 3:
-      include = True
-    elif num_active == 2 and len(set(active_methods) & must_include_one) > 0:
-      include = True
-
-    if include:
+    if should_use(num_active, active_methods):
       masks.add(active_mask)
 
   cmd = generate_command(
@@ -172,12 +168,7 @@ def main():
       guid = segfile.split('/')[1].split('_')[0]
       segfiles_by_guid[guid].append(method)
 
-  cnt = 0
   for guid, methods_for_guid in segfiles_by_guid.items():
-    cnt += 1
-    if cnt > 2:
-      break
-
     if guid in blacklist:
       continue
     if set(methods_for_guid) != set(methods):
@@ -185,8 +176,11 @@ def main():
 
     run_specific_methods(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
 
-    for N in range(3, len(methods) + 1):
-      run_any_N(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir, N)
+    for exclude in (tuple(), ('dkfz',), ('peifer',), ('dkfz', 'peifer')):
+      for N in range(2, len(methods) + 1):
+        if N > len(methods_for_guid) - len(exclude):
+          continue
+        run_any_N(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir, N, exclude=set(exclude))
 
     for must_include_one in (
       set(('broad', 'peifer')),
@@ -195,15 +189,54 @@ def main():
       set(('broad', 'peifer', 'vanloo_wedge_segs')),
     ):
       assert must_include_one.issubset(methods_for_guid)
-      run_hybrid(
+      should_use = lambda num_active, active_methods: \
+        (num_active >= 3) or \
+        (num_active == 2 and len(set(active_methods) & must_include_one) > 0)
+      run_custom(
         guid,
         methods_for_guid,
         args.window_size,
         args.centromere_fn,
         args.sv_dir,
         args.out_dir,
-        must_include_one,
-        'any3_any2_%s' % ','.join(must_include_one)
+        should_use,
+        'any3_any2_include_%s' % ','.join(must_include_one)
       )
+
+    for must_exclude in (
+      set(('mustonen095',)),
+      set(('mustonen095', 'dkfz')),
+      set(('mustonen095', 'dkfz', 'peifer'))
+    ):
+      assert must_exclude.issubset(methods_for_guid)
+      should_use = lambda num_active, active_methods: \
+        (num_active >= 3) or \
+        (num_active == 2 and len(set(active_methods) & must_exclude) == 0)
+      run_custom(
+        guid,
+        methods_for_guid,
+        args.window_size,
+        args.centromere_fn,
+        args.sv_dir,
+        args.out_dir,
+        should_use,
+        'any3_any2_exclude_%s' % ','.join(must_exclude)
+      )
+
+    # Run any3_any2_conservative
+    conservative_methods = set(('broad', 'peifer', 'vanloo_wedge_segs'))
+    should_use = lambda num_active, active_methods: \
+      (num_active >= 3) or \
+      (num_active == 2 and set(active_methods).issubset(conservative_methods))
+    run_custom(
+      guid,
+      methods_for_guid,
+      args.window_size,
+      args.centromere_fn,
+      args.sv_dir,
+      args.out_dir,
+      should_use,
+      'any3_any2_conservative'
+    )
 
 main()

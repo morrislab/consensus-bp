@@ -475,6 +475,8 @@ class ConsensusMaker(object):
   def _make_consensus(self, intervals, bp_scores, support_methods):
     consensus = defaultdict(list)
 
+    assert len(support_methods) > 0
+
     for chrom in intervals.keys():
       for intersecting_intervals in self._find_intersecting_intervals(intervals[chrom], support_methods):
         intersection = self._compute_intersection(intersecting_intervals)
@@ -501,7 +503,27 @@ class ConsensusMaker(object):
 
     return consensus
 
+  def _make_single_method_consensus(self, cncalls, method):
+    consensus = defaultdict(list)
+
+    for chrom in cncalls[method].keys():
+      positions = []
+      for cnv in cncalls[method][chrom]:
+        assert cnv['start'] <= cnv['end']
+        consensus[chrom] += [
+          Position(chrom=chrom, pos=cnv[coordtype], postype=coordtype, method=method)
+          for coordtype in ('start', 'end')
+        ]
+      consensus[chrom].sort(key = lambda P: P.pos)
+      for idx in range(len(consensus[chrom]) - 1):
+        assert consensus[chrom][idx].pos <= consensus[chrom][idx + 1].pos
+    return consensus
+
   def make_consensus(self):
+    if len(self._support_methods) == 1 and len(list(self._support_methods)[0]) == 1:
+      method = list(list(self._support_methods)[0])[0]
+      return self._make_single_method_consensus(self._cncalls, method)
+
     intervals = self._make_intervals(self._cncalls, int(0.5*self._window), int(0.5*self._window))
     bp_scores = self._score_breakpoints(intervals)
     return self._make_consensus(intervals, bp_scores, self._support_methods)
