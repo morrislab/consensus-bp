@@ -1,13 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-export LC_ALL=C
-module load gnu-parallel/20150822
+#export LC_ALL=C
+#module load gnu-parallel/20150822
 
 SVDIR=~/work/exultant-pistachio/data/sv
 BLACKLIST=~/work/exultant-pistachio/data/misc/blacklist.20160906.txt
 CENTROMERES=~/work/exultant-pistachio/data/misc/cytoBand.txt.gz
-methods="broad dkfz mustonen095 peifer vanloo_wedge_segs jabba"
+methods="broad dkfz jabba mustonen095 peifer vanloo_wedge_segs"
 
 NUM_NEEDED=3
 suffix=thresh_${NUM_NEEDED}
@@ -29,12 +29,11 @@ function main {
     --blacklist $BLACKLIST \
     --window-size 100000 \
     --centromere-filename $CENTROMERES \
-    --optional-methods $(echo $methods | sed 's/ /,/g') \
     --num-needed-methods $NUM_NEEDED \
     $SVDIR \
     $OUTDIR \
     $methods \
-    | parallel -j16
+    | parallel -j40
 
   cd $OUTDIR
   rm -rf too_few && mkdir too_few
