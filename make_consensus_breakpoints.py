@@ -511,17 +511,6 @@ class StructVarIntegrator(object):
     self._sv = StructVarParser(sv_filename).parse()
     self._associate_tracker = associate_tracker
 
-  def _find_closest_exemplar(self, sv, exemplars, window):
-    closest_exemplar = None
-    closest_dist = float('inf')
-    for exemplar in exemplars:
-      assert exemplar.chrom == sv.chrom
-      dist = abs(sv.pos - exemplar.pos)
-      if dist < closest_dist and dist <= window:
-        closest_dist = dist
-        closest_exemplar = exemplar
-    return closest_exemplar
-
   def _match_svs_to_exemplar(self, svs, exemplars, window):
     matches = []
     avail_sv = set(svs)
