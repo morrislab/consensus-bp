@@ -17,6 +17,7 @@ def parse_stats(statsfn, svcounts):
     'num_input_sv': [],
     'num_bp_away_from_sv_and_cents_and_telos': [],
     'num_bp_away_from_cents_and_telos': [],
+    'numbp': [],
     'datasets': [],
   }
   labels = {}
@@ -56,14 +57,17 @@ def parse_stats(statsfn, svcounts):
 
   return (stats, labels)
 
-def scatter(traces, title, xtitle, ytitle, outfn, logx = False):
+def scatter(traces, title, xtitle, ytitle, outfn, logx = False, xmin = None, xmax = None,):
+  xaxis = {
+    'title': xtitle,
+    'type': logx and 'log' or 'linear',
+    'range': [xmin, xmax],
+  }
+
   layout = go.Layout(
     title = title,
     hovermode = 'closest',
-    xaxis = {
-      'title': xtitle,
-      'type': logx and 'log' or 'linear',
-    },
+    xaxis = xaxis,
     yaxis = {
       'title': ytitle,
     },
@@ -120,6 +124,20 @@ def plot_method_combos(statsfns, svcounts):
     'method_combos_perf.html',
   )
 
+def make_numsv_trace(svcounts):
+  L = sorted(svcounts.keys())
+  Y = np.array([svcounts[K] for K in L])
+  X, Y, L = cdf(Y, L)
+  trace = go.Scatter(
+    mode='lines',
+    x = X,
+    y = Y,
+    text = L,
+    line = {'width': 4, 'dash': 'dash', 'color': 'black'},
+    name = 'SVs',
+  )
+  return trace
+
 def plot_ecdfs(statsfns, svcounts):
   traces = {
     'precision': [],
@@ -134,14 +152,24 @@ def plot_ecdfs(statsfns, svcounts):
 
     for plot in traces.keys():
       X, Y, L = cdf(stats[plot], labels[plot])
+
+      if run.startswith('any'):
+        line = {'width': 4}
+      else:
+        line = {'dash': 'dot', 'width': 4}
+
       traces[plot].append(go.Scatter(
-        mode='lines+markers',
+        mode='lines',
         x = X,
         y = Y,
         text = L,
         name = run,
-        visible = 'legendonly',
+        line = line,
+        #visible = 'legendonly',
       ))
+
+  numsv_trace = make_numsv_trace(svcounts)
+  traces['numbp'].append(numsv_trace)
 
   scatter(
     traces['precision'],
@@ -164,6 +192,8 @@ def plot_ecdfs(statsfns, svcounts):
     'ECDF(x)',
     'numbp_ecdf.html',
     logx = True,
+    #xmin = 1.9,
+    #xmax = 4,
   )
   scatter(
     traces['nonsv_ratio'],
@@ -171,6 +201,16 @@ def plot_ecdfs(statsfns, svcounts):
     'log2((# non-SV BPs + 1) / (# SVs + 1))',
     'ECDF(x)',
     'nonsv_ratio_ecdf.html',
+    xmin = -10,
+    xmax = 10,
+  )
+  scatter(
+    [numsv_trace],
+    '# SVs ECDF',
+    '# SVs',
+    'ECDF(x)',
+    'numsv_ecdf.html',
+    logx = True,
   )
 
 def main():
@@ -179,6 +219,5 @@ def main():
 
   plot_method_combos(sys.argv[2:], svcounts)
   plot_ecdfs(sys.argv[2:], svcounts)
-
 
 main()
