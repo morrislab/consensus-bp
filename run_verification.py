@@ -6,6 +6,7 @@ from collections import defaultdict
 import glob
 import math
 import sys
+import csv
 
 def load_blacklist(blacklistfn):
   with open(blacklistfn) as blist:
@@ -136,6 +137,80 @@ def run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_
   )
   print_safely(cmd)
 
+def parse_sex(sexfn):
+  sex = {}
+  with open(sexfn) as F:
+    reader = csv.DictReader(F)
+    for row in reader:
+      sex[row['tumourid']] = sex[row['gender']]
+  return sex
+
+def run_autosome_strats(guid, methods_for_guid, methods, window_size, centromere_fn, sv_dir, out_dir):
+  run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir)
+
+  for exclude in (tuple(), ('dkfz',), ('peifer',), ('dkfz', 'peifer')):
+    for N in range(2, len(methods) + 1):
+      if N > len(methods_for_guid) - len(exclude):
+        continue
+      run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, N, exclude=set(exclude))
+
+  for must_include_one in (
+    set(('broad', 'peifer')),
+    set(('broad', 'vanloo_wedge_segs')),
+    set(('peifer', 'vanloo_wedge_segs')),
+    set(('broad', 'peifer', 'vanloo_wedge_segs')),
+  ):
+    assert must_include_one.issubset(methods_for_guid)
+    should_use = lambda num_active, active_methods: \
+      (num_active >= 3) or \
+      (num_active == 2 and len(set(active_methods) & must_include_one) > 0)
+    run_custom(
+      guid,
+      methods_for_guid,
+      window_size,
+      centromere_fn,
+      sv_dir,
+      out_dir,
+      should_use,
+      'any3_any2_include_%s' % ','.join(must_include_one)
+    )
+
+  for must_exclude in (
+    set(('mustonen095',)),
+    set(('mustonen095', 'dkfz')),
+    set(('mustonen095', 'dkfz', 'peifer'))
+  ):
+    assert must_exclude.issubset(methods_for_guid)
+    should_use = lambda num_active, active_methods: \
+      (num_active >= 3) or \
+      (num_active == 2 and len(set(active_methods) & must_exclude) == 0)
+    run_custom(
+      guid,
+      methods_for_guid,
+      window_size,
+      centromere_fn,
+      sv_dir,
+      out_dir,
+      should_use,
+      'any3_any2_exclude_%s' % ','.join(must_exclude)
+    )
+
+  # Run any3_any2_conservative
+  conservative_methods = set(('broad', 'peifer', 'vanloo_wedge_segs'))
+  should_use = lambda num_active, active_methods: \
+    (num_active >= 3) or \
+    (num_active == 2 and set(active_methods).issubset(conservative_methods))
+  run_custom(
+    guid,
+    methods_for_guid,
+    window_size,
+    centromere_fn,
+    sv_dir,
+    out_dir,
+    should_use,
+    'any3_any2_conservative'
+  )
+
 def main():
   parser = argparse.ArgumentParser(
     description='LOL HI',
@@ -149,6 +224,8 @@ def main():
     help='List of blacklisted tumor samples')
   parser.add_argument('--centromere-filename', dest='centromere_fn', required=True,
       help='File containing centromeres (e.g., http://hgdownload.cse.ucsc.edu/goldenPath/hg19/database/cytoBand.txt.gz)')
+  parser.add_argument('--sex-filename', dest='sex_fn', required=True,
+      help='File containing inferred sex of each sample from Stefan')
   parser.add_argument('sv_dir', help='Directory containing SVs in VCF format')
   parser.add_argument('out_dir', help='Output directory')
   parser.add_argument('method', nargs='+', help='Methods whose CNV calls you wish to use')
@@ -158,6 +235,7 @@ def main():
 
   segfiles_by_guid = defaultdict(list)
   blacklist = load_blacklist(args.blacklist)
+  sex = parse_sex(args.sex_fn)
 
   for method in methods:
     if method.endswith('/'):
@@ -173,70 +251,6 @@ def main():
       continue
     if set(methods_for_guid) != set(methods):
       continue
-
-    run_specific_methods(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
-
-    for exclude in (tuple(), ('dkfz',), ('peifer',), ('dkfz', 'peifer')):
-      for N in range(2, len(methods) + 1):
-        if N > len(methods_for_guid) - len(exclude):
-          continue
-        run_any_N(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir, N, exclude=set(exclude))
-
-    for must_include_one in (
-      set(('broad', 'peifer')),
-      set(('broad', 'vanloo_wedge_segs')),
-      set(('peifer', 'vanloo_wedge_segs')),
-      set(('broad', 'peifer', 'vanloo_wedge_segs')),
-    ):
-      assert must_include_one.issubset(methods_for_guid)
-      should_use = lambda num_active, active_methods: \
-        (num_active >= 3) or \
-        (num_active == 2 and len(set(active_methods) & must_include_one) > 0)
-      run_custom(
-        guid,
-        methods_for_guid,
-        args.window_size,
-        args.centromere_fn,
-        args.sv_dir,
-        args.out_dir,
-        should_use,
-        'any3_any2_include_%s' % ','.join(must_include_one)
-      )
-
-    for must_exclude in (
-      set(('mustonen095',)),
-      set(('mustonen095', 'dkfz')),
-      set(('mustonen095', 'dkfz', 'peifer'))
-    ):
-      assert must_exclude.issubset(methods_for_guid)
-      should_use = lambda num_active, active_methods: \
-        (num_active >= 3) or \
-        (num_active == 2 and len(set(active_methods) & must_exclude) == 0)
-      run_custom(
-        guid,
-        methods_for_guid,
-        args.window_size,
-        args.centromere_fn,
-        args.sv_dir,
-        args.out_dir,
-        should_use,
-        'any3_any2_exclude_%s' % ','.join(must_exclude)
-      )
-
-    # Run any3_any2_conservative
-    conservative_methods = set(('broad', 'peifer', 'vanloo_wedge_segs'))
-    should_use = lambda num_active, active_methods: \
-      (num_active >= 3) or \
-      (num_active == 2 and set(active_methods).issubset(conservative_methods))
-    run_custom(
-      guid,
-      methods_for_guid,
-      args.window_size,
-      args.centromere_fn,
-      args.sv_dir,
-      args.out_dir,
-      should_use,
-      'any3_any2_conservative'
-    )
+    run_autosome_strats(guid, methods_for_guid, methods, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
 
 main()
