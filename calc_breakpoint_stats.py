@@ -75,8 +75,7 @@ def extract(breakpoints, prefix, truth):
 def parse_centromeres_and_telomeres(centromeres):
   cents_and_telos = defaultdict(list)
 
-  # Exclude chrY, since males lack it.
-  chroms = set(CHROM_LENS.keys()) - set(['Y'])
+  chroms = set(CHROM_LENS.keys())
   for chrom in chroms:
     points = {
       'chrom_start': 1,
