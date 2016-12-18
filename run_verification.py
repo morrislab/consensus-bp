@@ -22,7 +22,7 @@ def generate_method_combos(methods):
     active_methods = [methods[I] for I, C in enumerate(active_mask) if C == '1']
     yield (active_mask, active_methods)
 
-def generate_command(methods, guid, window_size, centromere_fn, sv_dir, out_dir, support_masks):
+def generate_command(methods, guid, window_size, centromere_fn, sv_dir, out_dir, support_masks, include_only_chrom=None):
   cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in sorted(methods)])
   assert len(support_masks) > 0
 
@@ -40,6 +40,8 @@ def generate_command(methods, guid, window_size, centromere_fn, sv_dir, out_dir,
   cmd += ' --centromere-filename %s' % centromere_fn
   cmd += ' --consensus-bps %s/%s.txt' % (out_dir, guid)
   cmd += ' --bp-details %s/%s.json' % (out_dir, guid)
+  if include_only_chrom is not None:
+    cmd += ' --include-only-chrom %s' % include_only_chrom
   cmd += ' --verbose'
   cmd += ' %s' % cnv_calls
   cmd += ' >%s/%s.stdout' % (out_dir, guid)
@@ -61,11 +63,11 @@ def nCr(n,r):
   f = math.factorial
   return int(f(n) / f(r) / f(n-r))
 
-def run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir):
+def run_individual_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, out_prefix='', include_only_chrom=None):
   for active_mask, active_methods in generate_method_combos(methods_for_guid):
     if len(active_methods) != 1:
       continue
-    outdir = os.path.join(base_outdir, 'methods.%s' % (active_methods[0]))
+    outdir = os.path.join(base_outdir, 'methods.%s%s' % (out_prefix, active_methods[0]))
     if not os.path.exists(outdir):
       os.makedirs(outdir)
     cmd = generate_command(
@@ -75,7 +77,8 @@ def run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_
       centromere_fn,
       sv_dir,
       outdir,
-      (active_mask,)
+      (active_mask,),
+      include_only_chrom
     )
     print_safely(cmd)
 
@@ -113,8 +116,7 @@ def run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_o
   )
   print_safely(cmd)
 
-def run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, should_use, run_name):
-  '''Combine any3 with any2, in which the any2 are seleected from a certain set of "reliable" methods.'''
+def run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, should_use, run_name, include_only_chrom=None):
   outdir = os.path.join(base_outdir, 'methods.%s' % run_name)
   if not os.path.exists(outdir):
     os.makedirs(outdir)
@@ -134,22 +136,24 @@ def run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_
     sv_dir,
     outdir,
     masks,
+    include_only_chrom = include_only_chrom
   )
   print_safely(cmd)
 
 def parse_sex(sexfn):
   sex = {}
   with open(sexfn) as F:
-    reader = csv.DictReader(F)
+    reader = csv.DictReader(F, delimiter='\t')
     for row in reader:
-      sex[row['tumourid']] = sex[row['gender']]
+      assert row['pred_gender'] in ('male', 'female')
+      sex[row['tumourid']] = row['pred_gender']
   return sex
 
-def run_autosome_strats(guid, methods_for_guid, methods, window_size, centromere_fn, sv_dir, out_dir):
-  run_specific_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir)
+def run_autosome_strats(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir):
+  run_individual_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir)
 
   for exclude in (tuple(), ('dkfz',), ('peifer',), ('dkfz', 'peifer')):
-    for N in range(2, len(methods) + 1):
+    for N in range(2, len(methods_for_guid) + 1):
       if N > len(methods_for_guid) - len(exclude):
         continue
       run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, N, exclude=set(exclude))
@@ -211,6 +215,32 @@ def run_autosome_strats(guid, methods_for_guid, methods, window_size, centromere
     'any3_any2_conservative'
   )
 
+def run_X_strats(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, sample_sex):
+  prefix = 'X_%s' % sample_sex
+
+  should_use = lambda num_active, active_methods: \
+    (num_active >= 3) or \
+    (num_active == 2 and len(set(('dkfz', 'mustonen095')) & set(active_methods)) == 0)
+  run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, should_use, '%s_any3_any2_except_dkfz,mustonen095' % prefix, include_only_chrom='X')
+
+  should_use = lambda num_active, active_methods: \
+    (num_active >= 3)
+  run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, should_use, '%s_any3' % prefix, include_only_chrom='X')
+
+  should_use = lambda num_active, active_methods: \
+    (num_active >= 2)
+  run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, should_use, '%s_any2' % prefix, include_only_chrom='X')
+
+  run_individual_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, out_prefix='X_%s_' % sample_sex, include_only_chrom='X')
+
+def run_Y_strats(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir):
+  assert set(methods_for_guid) == set(('dkfz', 'jabba'))
+  should_use = lambda num_active, active_methods: \
+    (num_active >= 2)
+  run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, should_use, 'Y_dkfz,jabba', include_only_chrom='Y')
+
+  run_individual_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir, out_prefix='Y_', include_only_chrom='Y')
+
 def main():
   parser = argparse.ArgumentParser(
     description='LOL HI',
@@ -228,7 +258,7 @@ def main():
       help='File containing inferred sex of each sample from Stefan')
   parser.add_argument('sv_dir', help='Directory containing SVs in VCF format')
   parser.add_argument('out_dir', help='Output directory')
-  parser.add_argument('method', nargs='+', help='Methods whose CNV calls you wish to use')
+  parser.add_argument('methods', nargs='+', help='Methods whose CNV calls you wish to use')
   args = parser.parse_args()
 
   methods = args.methods.split(',')
@@ -251,6 +281,24 @@ def main():
       continue
     if set(methods_for_guid) != set(methods):
       continue
-    run_autosome_strats(guid, methods_for_guid, methods, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
+    #run_autosome_strats(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
+
+    sample_sex = sex[guid]
+    if sample_sex == 'male':
+      # Exclude Battenberg's calls on males, as its calls are poor quality
+      # because of haploid state and consequent lack of heterozygous SNPs.
+      methods_for_guid = [M for M in methods_for_guid if not M.startswith('vanloo_wedge')]
+
+      # Peifer doesn't usually provide calls for X. This confirms so.
+      assert 'peifer' not in methods
+      run_X_strats(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir, sample_sex)
+
+      # Only Jabba and DKFZ provide Y calls.
+      methods_for_guid = list(set(methods_for_guid) & set(('dkfz', 'jabba')))
+      run_Y_strats(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
+    elif sample_sex == 'female':
+      run_X_strats(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir, sample_sex)
+    else:
+      raise Exception('Unknown sex: %s' % sample_sex)
 
 main()

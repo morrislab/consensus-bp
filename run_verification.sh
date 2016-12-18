@@ -7,9 +7,10 @@ set -euo pipefail
 SVDIR=~/work/exultant-pistachio/data/sv
 BLACKLIST=~/work/exultant-pistachio/data/misc/blacklist.20160906.txt
 CENTROMERES=~/work/exultant-pistachio/data/misc/cytoBand.txt.gz
-OUTDIR=~/work/exultant-pistachio/data/consensus_bp.verify.post_sv
+SEX=~/work/exultant-pistachio/data/misc/inferred_sex.all_samples.20161209.txt
+OUTDIR=~/work/exultant-pistachio/data/consensus_bp.verify.post_sv_sex
 PLOTDIR=$OUTDIR/plots
-methods="broad dkfz jabba mustonen095 peifer vanloo_wedge_segs"
+methods="broad_x dkfz jabba mustonen095 vanloo_wedge_segs"
 
 function create {
   mkdir -p $OUTDIR && rm -rf $OUTDIR/methods.*
@@ -20,6 +21,7 @@ function create {
     --blacklist $BLACKLIST \
     --window-size 100000 \
     --centromere-filename $CENTROMERES \
+    --sex-filename $SEX \
     --methods $(echo $methods | sed 's/ /,/g') \
     $SVDIR \
     $OUTDIR \
