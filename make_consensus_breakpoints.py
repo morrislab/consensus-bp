@@ -177,8 +177,7 @@ class CentromereAndTelomereBreaker(object):
     self.inside_centromere = 0
 
   def _add(self, positions, centromeres):
-    # Exclude chrY, since males lack it.
-    chroms = set(CHROM_LENS.keys()) - set(['Y'])
+    chroms = set(CHROM_LENS.keys())
 
     for chrom in chroms:
       centromere_start, centromere_end = centromeres[chrom]
@@ -672,15 +671,21 @@ class BreakpointFilter(object):
 
     return (filtered, removed)
 
-  def remove_sex(self, breakpoints):
-    filtered = defaultdict(list)
+  def _retain_only_chroms(self, breakpoints, should_keep):
+    retained = defaultdict(list)
 
     for chrom in breakpoints.keys():
-      if chrom in ('X', 'Y'):
-        continue
-      filtered[chrom] = breakpoints[chrom]
+      if should_keep(chrom):
+        retained[chrom] = breakpoints[chrom]
 
-    return filtered
+    return retained
+
+  def retain_only_chrom(self, breakpoints, to_keep):
+    return self._retain_only_chroms(breakpoints, lambda C: C == to_keep)
+
+  def retain_only_autosomes(self, breakpoints):
+    return self._retain_only_chroms(breakpoints, lambda C: C not in ('X', 'Y'))
+
 
 def load_cn_calls(cnv_files):
   cn_calls = {}
@@ -760,6 +765,8 @@ def main():
     help='Consensus structural variants filename (VCF format)')
   parser.add_argument('--centromere-filename', dest='centromere_fn', required=True,
       help='File containing centromeres (e.g., http://hgdownload.cse.ucsc.edu/goldenPath/hg19/database/cytoBand.txt.gz)')
+  parser.add_argument('--include-only-chrom', dest='include_only_chrom',
+    help='Include only a certain chromosome. As we use separate strategies for autosomes, X on females, and X & Y on males, we can perform separate runs for each using this option.')
   parser.add_argument('--consensus-bps', dest='consensus_bp_fn', required=True,
     help='Path to consensus BPs output')
   parser.add_argument('--bp-details', dest='bp_details_fn', required=True,
@@ -809,9 +816,13 @@ def main():
   centromeres = CentromereParser().load(args.centromere_fn)
   ctb = CentromereAndTelomereBreaker(centromere_and_telomere_threshold)
   ctb.add_breakpoints(consensus, centromeres, associate_tracker)
-  stats['inside_centromere'] = ctb.inside_centromere
-  consensus = BreakpointFilter().remove_sex(consensus)
 
+  if args.include_only_chrom is None:
+    consensus = BreakpointFilter().retain_only_autosomes(consensus)
+  else:
+    consensus = BreakpointFilter().retain_only_chrom(args.include_only_chrom)
+
+  stats['inside_centromere'] = ctb.inside_centromere
   stats['before_removing_proximal'] = count_bp(consensus)
   consensus, removed = BreakpointFilter().remove_proximal(consensus, proximity_threshold, associate_tracker)
   #stats['proximal_removed'] = list(removed)
