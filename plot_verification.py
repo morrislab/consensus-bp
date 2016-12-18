@@ -1,6 +1,5 @@
 from __future__ import print_function, division
 import sys
-import json
 import numpy as np
 import csv
 import os
@@ -9,7 +8,7 @@ import glob
 import plotly
 import plotly.graph_objs as go
 
-def parse_stats(statsfn, svcounts):
+def parse_stats(statsfn):
   stats = {
     'tp': [],
     'fp': [],
@@ -18,6 +17,7 @@ def parse_stats(statsfn, svcounts):
     'num_bp_away_from_sv_and_cents_and_telos': [],
     'num_bp_away_from_cents_and_telos': [],
     'numbp': [],
+    'num_sv_away_from_cents_and_telos': [],
     'datasets': [],
   }
   labels = {}
@@ -28,10 +28,10 @@ def parse_stats(statsfn, svcounts):
       stats['tp'].append(float(row['num_bp_replaced_by_sv']))
       stats['fp'].append(float(row['num_non_sv']))
       stats['fn'].append(float(row['num_lone_sv']))
-      stats['num_input_sv'].append(svcounts[row['dataset']])
+      stats['num_sv_away_from_cents_and_telos'].append(float(row['num_bp_replaced_by_sv']) + float(row['num_lone_sv']))
       stats['datasets'].append(row['dataset'])
 
-  for K in ('tp', 'fp', 'fn', 'num_input_sv', 'num_bp_away_from_sv_and_cents_and_telos', 'num_bp_away_from_cents_and_telos'):
+  for K in ('tp', 'fp', 'fn', 'num_input_sv', 'num_bp_away_from_sv_and_cents_and_telos', 'num_bp_away_from_cents_and_telos', 'num_sv_away_from_cents_and_telos'):
     stats[K] = np.array(stats[K], dtype=np.float)
 
   stats['numbp'] = stats['tp'] + stats['fp']
@@ -49,11 +49,11 @@ def parse_stats(statsfn, svcounts):
   assert len(stats['precision']) == len(stats['recall'])
   print(statsfn, 'has', oldlen - len(stats['precision']), 'nan')
 
-  stats['nonsv_ratio'] = (stats['fp'] + 1) / (stats['num_input_sv'] + 1)
+  stats['nonsv_ratio'] = (stats['fp'] + 1) / (stats['num_sv_away_from_cents_and_telos'] + 1)
   assert np.count_nonzero(np.isnan(stats['nonsv_ratio'])) == 0
   assert np.count_nonzero(stats['nonsv_ratio'] == 0) == 0
   stats['nonsv_ratio'] = np.log2(stats['nonsv_ratio'])
-  labels['nonsv_ratio'] = ['%s (nonsv = %s, sv = %s)' % (stats['datasets'][idx], stats['fp'][idx], stats['num_input_sv'][idx]) for idx in range(len(stats['datasets']))]
+  labels['nonsv_ratio'] = ['%s (nonsv = %s, sv = %s)' % (stats['datasets'][idx], stats['fp'][idx], stats['num_sv_away_from_cents_and_telos'][idx]) for idx in range(len(stats['datasets']))]
 
   return (stats, labels)
 
@@ -85,14 +85,14 @@ def cdf(arr, labels=None):
     ret.append([labels[idx] for idx in sorted_idxs])
   return tuple(ret)
 
-def plot_method_combos(statsfns, svcounts):
+def plot_method_combos(statsfns):
   xvals, yvals, xerrors, yerrors = [], [], [], []
   runs = []
 
   for statsfn in statsfns:
     run = os.path.basename(statsfn).split('.')[1]
     runs.append(run)
-    stats, _ = parse_stats(statsfn, svcounts)
+    stats, _ = parse_stats(statsfn)
 
     xvals.append(np.mean(stats['recall']))
     yvals.append(np.mean(stats['precision']))
@@ -124,21 +124,7 @@ def plot_method_combos(statsfns, svcounts):
     'method_combos_perf.html',
   )
 
-def make_numsv_trace(svcounts):
-  L = sorted(svcounts.keys())
-  Y = np.array([svcounts[K] for K in L])
-  X, Y, L = cdf(Y, L)
-  trace = go.Scatter(
-    mode='lines',
-    x = X,
-    y = Y,
-    text = L,
-    line = {'width': 4, 'dash': 'dash', 'color': 'black'},
-    name = 'SVs',
-  )
-  return trace
-
-def plot_ecdfs(statsfns, svcounts):
+def plot_ecdfs(statsfns):
   traces = {
     'precision': [],
     'recall': [],
@@ -148,7 +134,7 @@ def plot_ecdfs(statsfns, svcounts):
 
   for statsfn in statsfns:
     run = os.path.basename(statsfn).split('.')[1]
-    stats, labels = parse_stats(statsfn, svcounts)
+    stats, labels = parse_stats(statsfn)
 
     for plot in traces.keys():
       X, Y, L = cdf(stats[plot], labels[plot])
@@ -163,13 +149,15 @@ def plot_ecdfs(statsfns, svcounts):
         x = X,
         y = Y,
         text = L,
-        name = run,
+        name = '%s (%s values)' % (run, len(L)),
         line = line,
-        #visible = 'legendonly',
+        # Comma corresponds to "Y_dkfz,jabba", which uses both (along with SVs).
+        visible = (('any' in run or ',' in run) and True or 'legendonly'),
       ))
 
-  numsv_trace = make_numsv_trace(svcounts)
-  traces['numbp'].append(numsv_trace)
+  for T in traces['numbp']:
+    if T['name'].startswith('any'):
+      T['visible'] = False
 
   scatter(
     traces['precision'],
@@ -204,20 +192,9 @@ def plot_ecdfs(statsfns, svcounts):
     xmin = -10,
     xmax = 10,
   )
-  scatter(
-    [numsv_trace],
-    '# SVs ECDF',
-    '# SVs',
-    'ECDF(x)',
-    'numsv_ecdf.html',
-    logx = True,
-  )
 
 def main():
-  with open(sys.argv[1]) as svcountsf:
-    svcounts = json.load(svcountsf)
-
-  plot_method_combos(sys.argv[2:], svcounts)
-  plot_ecdfs(sys.argv[2:], svcounts)
+  plot_method_combos(sys.argv[1:])
+  plot_ecdfs(sys.argv[1:])
 
 main()
