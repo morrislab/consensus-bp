@@ -391,6 +391,7 @@ class ConsensusMaker(object):
     prev_overlapping = []
     prev_num_overlapping = 0
     threshold_reached = False
+    prev_match_better = False
     idx = 0
     overlapping = []
 
@@ -418,11 +419,22 @@ class ConsensusMaker(object):
       overlapping_methods = set([I.method for I in overlapping])
       assert len(overlapping_methods) == num_overlapping
 
+      if threshold_reached and num_overlapping < prev_num_overlapping:
+        #print('decline', overlapping, overlapping_methods, set([I.method for I in prev_overlapping]))
+        prev_match_better = True
+
       for M in support_methods:
         if M.issubset(overlapping_methods):
+          #print('reached', overlapping_methods, M)
           threshold_reached = True
           break
-      if threshold_reached and num_overlapping < prev_num_overlapping:
+      else:
+        if threshold_reached:
+          #print('nothing matched', overlapping_methods, set([I.method for I in prev_overlapping]))
+          prev_match_better = True
+
+      if prev_match_better:
+        assert threshold_reached
         # One or more methods have dropped out of the intersection, so it's time to report the intersection.
         # Suppose you encounter intervals from methods in this order: method_A,
         # method_B, method_C, method_A, method_D. If we report when
@@ -432,9 +444,12 @@ class ConsensusMaker(object):
         for I in prev_overlapping:
           intervals.remove(I)
           assert I not in intervals # Ensure not multiple copies of I in intervals
+        #print('taking', prev_overlapping)
         return prev_overlapping
 
       # Duplicate list.
+      #print('prev_overlapping', prev_num_overlapping, prev_overlapping)
+      #print('overlapping', num_overlapping, overlapping)
       prev_overlapping = list(overlapping)
       prev_num_overlapping = num_overlapping
       idx += 1
