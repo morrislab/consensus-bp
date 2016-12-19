@@ -7,7 +7,7 @@ import json
 from collections import defaultdict, namedtuple
 
 StructVar = namedtuple('StructVar', ('chrom', 'pos', 'svclass'))
-Interval = namedtuple('Interval', ('start', 'end', 'breakpoints', 'method'))
+Interval = namedtuple('Interval', ('start', 'end', 'breakpoints', 'associates', 'method'))
 
 class Position(object):
   # Position was originally a namedtuple, but we want it to be mutable.
@@ -16,6 +16,15 @@ class Position(object):
     self.pos = pos
     self.postype = postype
     self.method = method
+    self._interval = None
+
+  @property
+  def interval(self):
+    return self._interval
+
+  @interval.setter
+  def interval(self, val):
+    self._interval = val
 
   def __str__(self):
     return 'chr%s(%s, %s, %s)' % (self.chrom, self.pos, self.postype, self.method)
@@ -353,6 +362,7 @@ class ConsensusMaker(object):
         # (Sets require their elements to be hashable, but sets themselves
         # aren't hashable.)
         breakpoints = frozenset([terminal_pos]),
+        associates = None,
         method = terminal_pos.method,
       ))
 
@@ -366,6 +376,7 @@ class ConsensusMaker(object):
         start = max(1, upstream_end.pos - upstream_window),
         end = min(chrom_len, downstream_start.pos + downstream_window),
         breakpoints = frozenset([upstream_end, downstream_start]),
+        associates = None,
         method = upstream_end.method # Which is same as downstream_start.method
       ))
 
@@ -483,8 +494,39 @@ class ConsensusMaker(object):
     sorted_by_end   = sorted(intersecting, key = lambda I: I.end)
     intersect_start = sorted_by_start[-1].start
     intersect_end = sorted_by_end[0].end
-    bp = [bp for I in intersecting for bp in I.breakpoints if I.start <= bp.pos <= I.end]
-    return Interval(start = intersect_start, end = intersect_end, breakpoints = frozenset(bp), method = 'intersection')
+
+    # BUG: this line formerly used I.start and I.end, rather than
+    # intersect_start and intersect_end, as the bounds. The effect of
+    # this mistake was that the breakpoints lost some precision, as we
+    # effectively select each interval's representative from the *union* of
+    # intervals associated with the input breakpoints, not the *intersection*.
+    #
+    # E.g.: suppose you have input BPs at 1 bp, 60 kb, 60.479 kb, 67.5 kb, and
+    # 92.527 kb.  The associated intervals are [1, 50 kb], [10 kb, 60 kb],
+    # [10.479 kb, 60.479 kb], [17.5 kb, 67.5 kb], [42.527 kb, 92.527 kb]. Their
+    # intersection is [42.527 kb, 50 kb]. None of the breakpoints lie in this
+    # interval, so we should take the 5' end (42.527 kb) as the representative.
+    # Instead, we took "1 bp" as the representative before the fix.
+    #
+    # Note that this can also affect intervals that *do* have some of their
+    # associated breakpoints lying in the intersection, since the pool of
+    # breakpoints from which we select the interval's representative was
+    # associated with the union, not the intersection.
+    breakpoints = [bp for I in intersecting for bp in I.breakpoints if intersect_start <= bp.pos <= intersect_end]
+    associates = [bp for I in intersecting for bp in I.breakpoints]
+
+    # Confirm that the old behaviour was incorrect in the way I expect. TODO: I
+    # can remove these two lines later.
+    old_breakpoints = [bp for I in intersecting for bp in I.breakpoints if I.start <= bp.pos <= I.end]
+    assert associates == old_breakpoints
+
+    return Interval(
+      start = intersect_start,
+      end = intersect_end,
+      breakpoints = frozenset(breakpoints),
+      associates = frozenset(associates),
+      method = 'intersection',
+    )
 
   def _make_consensus(self, intervals, bp_scores, support_methods):
     consensus = defaultdict(list)
@@ -496,6 +538,8 @@ class ConsensusMaker(object):
         intersection = self._compute_intersection(intersecting_intervals)
         associated_pos = [P for I in intersecting_intervals for P in I.breakpoints]
 
+        # TODO: Can later remove alternative_bp, as we only use it as a check now.
+        alternative_bp = sorted(intersection.associates, key = lambda bp: (bp_scores[bp], bp.postype == 'start'))[-1]
         if len(intersection.breakpoints) > 0:
           # Take breakpoint with highest score, which corresponds to smallest gap in associated interval.
           consensus_bp = sorted(intersection.breakpoints, key = lambda bp: (bp_scores[bp], bp.postype == 'start'))[-1]
@@ -507,7 +551,16 @@ class ConsensusMaker(object):
             postype = 'undirected',
             method = 'added_from_intersection'
           )
+        consensus_bp.interval = intersection
         consensus[chrom].append(consensus_bp)
+
+        if consensus_bp == alternative_bp:
+          pass
+          #print('same', consensus_bp, sep='\t')
+        else:
+          distance = abs(consensus_bp.pos - alternative_bp.pos)
+          #print('different', distance, consensus_bp.chrom, alternative_bp.chrom, consensus_bp, intersection, sep='\t')
+
         for apos in associated_pos:
           self._associate_tracker.add(consensus_bp, apos)
 
@@ -635,13 +688,23 @@ class OutputWriter(object):
     self._posmap = defaultdict(lambda: defaultdict(list))
 
   def _add_positions_to_posmap(self, method, positions):
-    for chrom in positions.keys():
-      for pos in positions[chrom]:
-        entry = {
+    _make_entry = lambda pos: {
           'postype': pos.postype,
           'pos': pos.pos,
           'method': pos.method,
-        }
+    }
+
+    for chrom in positions.keys():
+      for pos in positions[chrom]:
+        entry = _make_entry(pos)
+        if method == 'consensus' and pos.interval is not None:
+          # Must check if method is consensus, as Positions are modified in
+          # place -- most consensus positions also belong to their individual
+          # methods.
+          entry['interval'] = [pos.interval.start, pos.interval.end],
+          associates = [P for P in pos.interval.associates if P != pos]
+          associates = [_make_entry(P) for P in associates]
+          entry['associates'] = sorted(associates, key = lambda P: (P['pos'], P['method']))
         self._posmap[method][chrom].append(entry)
 
   def write_details(self, consensus, cna_pos, consensus_methods, avail_methods, stats, params, associate_tracker, outfn):
@@ -651,8 +714,8 @@ class OutputWriter(object):
 
     with open(outfn, 'w') as outf:
       json.dump({
-        'consensus_methods': list(consensus_methods),
-        'avail_methods': list(avail_methods),
+        'consensus_methods': sorted(consensus_methods),
+        'avail_methods': sorted(avail_methods),
         'params': params,
         'bp': self._posmap,
         'stats': stats,
