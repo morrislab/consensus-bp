@@ -11,6 +11,7 @@ SEX=~/work/exultant-pistachio/data/misc/inferred_sex.all_samples.20161209.txt
 OUTDIR=~/work/exultant-pistachio/data/consensus_bp.verify.post_sv_sex
 PLOTDIR=$OUTDIR/plots
 methods="broad_x dkfz jabba mustonen095 vanloo_wedge_segs"
+PARALLEL=40
 
 function create {
   mkdir -p $OUTDIR && rm -rf $OUTDIR/methods.*
@@ -22,11 +23,10 @@ function create {
     --window-size 100000 \
     --centromere-filename $CENTROMERES \
     --sex-filename $SEX \
-    --methods $(echo $methods | sed 's/ /,/g') \
     $SVDIR \
     $OUTDIR \
     $methods \
-    | parallel -j40
+    | parallel -j$PARALLEL
 }
 
 function evaluate {
@@ -39,7 +39,7 @@ function evaluate {
       "$CENTROMERES" \
       "$run"/'*-*.json' \
       "> $PLOTDIR/stats.$runtype.txt"
-  done | parallel -j40
+  done | parallel -j$PARALLEL
 }
 
 function main {

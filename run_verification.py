@@ -3,61 +3,9 @@ import argparse
 import glob
 import os
 from collections import defaultdict
-import glob
 import math
-import sys
-import csv
 
-def load_blacklist(blacklistfn):
-  with open(blacklistfn) as blist:
-    return set([l.strip() for l in blist.readlines()])
-
-def generate_method_combos(methods):
-  methods = sorted(set(methods))
-  N = len(methods)
-  for idx in range(1, 2**N):
-    active_mask = bin(idx)[2:] # Remove '0b' prefix
-
-    active_mask = active_mask.zfill(N)
-    active_methods = [methods[I] for I, C in enumerate(active_mask) if C == '1']
-    yield (active_mask, active_methods)
-
-def generate_command(methods, guid, window_size, centromere_fn, sv_dir, out_dir, support_masks, include_only_chrom=None):
-  cnv_calls = ' '.join(['%s=%s/%s_segments.txt' % (method, method, guid) for method in sorted(methods)])
-  assert len(support_masks) > 0
-
-  cmd = 'python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/make_consensus_breakpoints.py '
-  cmd += ' --required-methods %s' % (','.join(methods))
-  cmd += ' --support-masks %s' % ','.join(support_masks)
-  cmd += ' --num-needed-methods %s' % len(methods)
-  cmd += ' --dataset-name %s' % guid
-
-  sv_path = glob.glob(os.path.join(sv_dir, '%s.*.sv.vcf.gz' % guid))
-  if len(sv_path) != 1:
-    return None
-  cmd += ' --window-size %s' % window_size
-  cmd += ' --sv-filename %s' % sv_path[0]
-  cmd += ' --centromere-filename %s' % centromere_fn
-  cmd += ' --consensus-bps %s/%s.txt' % (out_dir, guid)
-  cmd += ' --bp-details %s/%s.json' % (out_dir, guid)
-  if include_only_chrom is not None:
-    cmd += ' --include-only-chrom %s' % include_only_chrom
-  cmd += ' --verbose'
-  cmd += ' %s' % cnv_calls
-  cmd += ' >%s/%s.stdout' % (out_dir, guid)
-  cmd += ' 2>%s/%s.stderr' % (out_dir, guid)
-  return cmd
-
-def print_safely(S):
-  # Account for EOF generated on STDOUT when output piped to "head" or
-  # whatever.
-  try:
-    if S is None:
-      return
-    print(S)
-  except IOError, e:
-    assert e.errno == 32
-    sys.exit()
+from run_comparison import load_sample_list, generate_method_combos, generate_command, print_safely, run_custom, parse_sex
 
 def nCr(n,r):
   f = math.factorial
@@ -115,39 +63,6 @@ def run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_o
     masks,
   )
   print_safely(cmd)
-
-def run_custom(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_outdir, should_use, run_name, include_only_chrom=None):
-  outdir = os.path.join(base_outdir, 'methods.%s' % run_name)
-  if not os.path.exists(outdir):
-    os.makedirs(outdir)
-
-  masks = set()
-
-  for active_mask, active_methods in generate_method_combos(methods_for_guid):
-    num_active = sum([int(x) for x in active_mask])
-    if should_use(num_active, active_methods):
-      masks.add(active_mask)
-
-  cmd = generate_command(
-    methods_for_guid,
-    guid,
-    window_size,
-    centromere_fn,
-    sv_dir,
-    outdir,
-    masks,
-    include_only_chrom = include_only_chrom
-  )
-  print_safely(cmd)
-
-def parse_sex(sexfn):
-  sex = {}
-  with open(sexfn) as F:
-    reader = csv.DictReader(F, delimiter='\t')
-    for row in reader:
-      assert row['pred_gender'] in ('male', 'female')
-      sex[row['tumourid']] = row['pred_gender']
-  return sex
 
 def run_autosome_strats(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir):
   run_individual_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir)
@@ -261,12 +176,11 @@ def main():
   parser.add_argument('methods', nargs='+', help='Methods whose CNV calls you wish to use')
   args = parser.parse_args()
 
-  methods = args.methods.split(',')
-
   segfiles_by_guid = defaultdict(list)
-  blacklist = load_blacklist(args.blacklist)
+  blacklist = load_sample_list(args.blacklist)
   sex = parse_sex(args.sex_fn)
 
+  methods = args.methods
   for method in methods:
     if method.endswith('/'):
       method = method[:-1]
@@ -301,4 +215,5 @@ def main():
     else:
       raise Exception('Unknown sex: %s' % sample_sex)
 
-main()
+if __name__ == '__main__':
+  main()

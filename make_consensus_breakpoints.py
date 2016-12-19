@@ -519,7 +519,9 @@ class ConsensusMaker(object):
     return consensus
 
   def make_consensus(self):
-    if len(self._support_methods) == 1 and len(list(self._support_methods)[0]) == 1:
+    if len(self._support_methods) == 0:
+      return defaultdict(list)
+    elif len(self._support_methods) == 1 and len(list(self._support_methods)[0]) == 1:
       method = list(list(self._support_methods)[0])[0]
       return self._make_single_method_consensus(self._cncalls, method)
 
@@ -627,14 +629,15 @@ class OutputWriter(object):
         }
         self._posmap[method][chrom].append(entry)
 
-  def write_details(self, consensus, cna_pos, methods, stats, params, associate_tracker, outfn):
+  def write_details(self, consensus, cna_pos, consensus_methods, avail_methods, stats, params, associate_tracker, outfn):
     self._add_positions_to_posmap('consensus', consensus)
     for method, pos in cna_pos.items():
       self._add_positions_to_posmap(method, pos)
 
     with open(outfn, 'w') as outf:
       json.dump({
-        'methods': list(methods),
+        'consensus_methods': list(consensus_methods),
+        'avail_methods': list(avail_methods),
         'params': params,
         'bp': self._posmap,
         'stats': stats,
@@ -730,6 +733,9 @@ def log(*msgs):
 log.verbose = False
 
 def generate_supported_methods(support_masks, consensus_methods):
+  if support_masks is None:
+    return set()
+
   support_masks = list(set(support_masks.split(',')))
   S = sorted(consensus_methods)
   support_methods = set()
@@ -757,7 +763,7 @@ def main():
     help='Number of available (optional or required) methods necessary to establish consensus')
   parser.add_argument('--window-size', dest='window_size', type=int, default=5000,
     help='Window within which breakpoints must be placed to be considered equivalent')
-  parser.add_argument('--support-masks', dest='support_masks', required=True,
+  parser.add_argument('--support-masks', dest='support_masks',
     help='Binary masks indicating which methods must support a breakpoint to place a consensus breakpoint')
   parser.add_argument('--dataset-name', dest='dataset_name', required=True,
     help='Dataset name')
@@ -805,6 +811,10 @@ def main():
 
   associate_tracker = AssociateTracker()
   support_methods = generate_supported_methods(args.support_masks, consensus_methods)
+  # In JSON output, if we're not actually using any methods, we shouldn't list
+  # any as available.
+  if len(support_methods) == 0:
+    consensus_methods = set()
 
   cm = ConsensusMaker(cn_calls, args.window_size, support_methods, associate_tracker)
   consensus = cm.make_consensus()
@@ -820,7 +830,7 @@ def main():
   if args.include_only_chrom is None:
     consensus = BreakpointFilter().retain_only_autosomes(consensus)
   else:
-    consensus = BreakpointFilter().retain_only_chrom(args.include_only_chrom)
+    consensus = BreakpointFilter().retain_only_chrom(consensus, args.include_only_chrom)
 
   stats['inside_centromere'] = ctb.inside_centromere
   stats['before_removing_proximal'] = count_bp(consensus)
@@ -841,7 +851,7 @@ def main():
 
   ow = OutputWriter()
   ow.write_consensus(consensus, args.consensus_bp_fn)
-  ow.write_details(consensus, cm.cna_pos, consensus_methods, stats, params, associate_tracker, args.bp_details_fn)
+  ow.write_details(consensus, cm.cna_pos, consensus_methods, avail_methods, stats, params, associate_tracker, args.bp_details_fn)
 
 if __name__ == '__main__':
   main()
