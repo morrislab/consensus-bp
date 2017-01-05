@@ -71,7 +71,7 @@ function make_consensus {
     $SVDIR \
     $OUTDIR \
     $METHODS_Y
-  ) | parallel -j$PARALLEL
+  ) | parallel -j$PARALLEL --joblog $BASEDIR/data/tmp/jobs.log --halt 1
 }
 
 function merge_releases {
@@ -80,9 +80,10 @@ function merge_releases {
 }
 
 function package_release {
-  cd $MERGEDDIR/data
-  tar czf $BASEDIR/data/archives/consensus_bp.$releaseid.tar.gz *-*.txt --transform "s|^|consensus_bp.$releaseid.tar.gz/|"
-  tar czf $BASEDIR/data/archives/consensus_bp.extended.$releaseid.tar.gz *-*.json --transform "s|^|consensus_bp.extended.$releaseid.tar.gz/|"
+  cd $MERGEDDIR
+  #tar czf $BASEDIR/data/archives/consensus_bp.basic.$releaseid.tar.gz *-*.txt --transform "s|^|consensus_bp.basic.$releaseid/|"
+  cd ..
+  tar czf $BASEDIR/data/archives/consensus_bp.extended.$releaseid.tar.gz bp.*/*-*.{json,stderr} --transform "s|^|consensus_bp.extended.$releaseid/|"
 }
 
 function main {

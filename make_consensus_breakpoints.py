@@ -7,6 +7,16 @@ import json
 from collections import defaultdict, namedtuple
 
 StructVar = namedtuple('StructVar', ('chrom', 'pos', 'svclass'))
+
+# Note that `associates` are distinct from `breakpoints.
+#   * Breakpoints: Position objects that lie in the interval.
+#   * Associates: Position objects that may not be in the interval, but are
+#     associated with it in some way. I use this to track all the breakpoints
+#     that originally lay in the different intervals that were subsequently
+#     intersected. It can thus provide insight into what different breakpoints
+#     gave rise to the intervals whose intersection yielded a consensus
+#     breakpoint. This is especially useful in cases when the breakpoints that
+#     generated an intersection all lie outside the interval.
 Interval = namedtuple('Interval', ('start', 'end', 'breakpoints', 'associates', 'method'))
 
 class Position(object):
@@ -31,6 +41,7 @@ class Position(object):
 
   def __repr__(self):
     return str(self)
+
 
 # Taken from https://genome.ucsc.edu/goldenpath/help/hg19.chrom.sizes.
 CHROM_LENS = {
@@ -513,12 +524,12 @@ class ConsensusMaker(object):
     # breakpoints from which we select the interval's representative was
     # associated with the union, not the intersection.
     breakpoints = [bp for I in intersecting for bp in I.breakpoints if intersect_start <= bp.pos <= intersect_end]
-    associates = [bp for I in intersecting for bp in I.breakpoints]
 
-    # Confirm that the old behaviour was incorrect in the way I expect. TODO: I
-    # can remove these two lines later.
-    old_breakpoints = [bp for I in intersecting for bp in I.breakpoints if I.start <= bp.pos <= I.end]
-    assert associates == old_breakpoints
+    associates = [bp for I in intersecting for bp in I.breakpoints]
+    # Clone Positions in associates so we can see exactly what positions
+    # supported each consensus breakpoint, without them later being
+    # repositioned in accordance with SVs.
+    associates = [Position(bp.chrom, bp.pos, bp.postype, bp.method) for bp in associates]
 
     return Interval(
       start = intersect_start,
@@ -536,10 +547,8 @@ class ConsensusMaker(object):
     for chrom in intervals.keys():
       for intersecting_intervals in self._find_intersecting_intervals(intervals[chrom], support_methods):
         intersection = self._compute_intersection(intersecting_intervals)
-        associated_pos = [P for I in intersecting_intervals for P in I.breakpoints]
+        associated_pos = [bp for I in intersecting_intervals for bp in I.breakpoints]
 
-        # TODO: Can later remove alternative_bp, as we only use it as a check now.
-        alternative_bp = sorted(intersection.associates, key = lambda bp: (bp_scores[bp], bp.postype == 'start'))[-1]
         if len(intersection.breakpoints) > 0:
           # Take breakpoint with highest score, which corresponds to smallest gap in associated interval.
           consensus_bp = sorted(intersection.breakpoints, key = lambda bp: (bp_scores[bp], bp.postype == 'start'))[-1]
@@ -552,14 +561,8 @@ class ConsensusMaker(object):
             method = 'added_from_intersection'
           )
         consensus_bp.interval = intersection
+        assert consensus_bp not in consensus[chrom]
         consensus[chrom].append(consensus_bp)
-
-        if consensus_bp == alternative_bp:
-          pass
-          #print('same', consensus_bp, sep='\t')
-        else:
-          distance = abs(consensus_bp.pos - alternative_bp.pos)
-          #print('different', distance, consensus_bp.chrom, alternative_bp.chrom, consensus_bp, intersection, sep='\t')
 
         for apos in associated_pos:
           self._associate_tracker.add(consensus_bp, apos)
@@ -742,8 +745,8 @@ class BreakpointFilter(object):
         while idx > 0 and points[idx].pos - points[idx - 1].pos <= threshold:
           # Remove element at idx.
           removed.add(points[idx])
-          associate_tracker.remove(points[idx])
           log('Removing %s because of preceding %s' % (points[idx], points[idx - 1]))
+          associate_tracker.remove(points[idx])
           points = points[:idx] + points[(idx + 1):]
           idx -= 1
         idx -= 1
