@@ -195,7 +195,8 @@ def main():
       continue
     if set(methods_for_guid) != set(methods):
       continue
-    #run_autosome_strats(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
+    run_autosome_strats(guid, methods_for_guid, args.window_size, args.centromere_fn, args.sv_dir, args.out_dir)
+    continue
 
     sample_sex = sex[guid]
     if sample_sex == 'male':

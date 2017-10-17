@@ -8,9 +8,9 @@ SVDIR=~/work/exultant-pistachio/data/sv
 BLACKLIST=~/work/exultant-pistachio/data/misc/blacklist.20160906.txt
 CENTROMERES=~/work/exultant-pistachio/data/misc/cytoBand.txt.gz
 SEX=~/work/exultant-pistachio/data/misc/inferred_sex.all_samples.20161209.txt
-OUTDIR=~/work/exultant-pistachio/data/consensus_bp.verify.post_sv_sex
+OUTDIR=~/work/exultant-pistachio/data/consensus_bp.verify.post_sv
 PLOTDIR=$OUTDIR/plots
-methods="broad_x dkfz jabba mustonen095 vanloo_wedge_segs"
+methods="broad dkfz jabba mustonen095 peifer vanloo_wedge_segs"
 PARALLEL=40
 
 function create {
@@ -42,9 +42,16 @@ function evaluate {
   done | parallel -j$PARALLEL
 }
 
+function plot {
+  cd $PLOTDIR
+  python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/plot_verification.py "consensus_methods" stats.any*.txt
+  python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/plot_verification.py "indiv_methods" $(ls stats*txt | grep -v "^stats.any")
+}
+
 function main {
   create
   evaluate
+  plot
 }
 
 main
