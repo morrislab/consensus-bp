@@ -47,7 +47,7 @@ def parse_stats(statsfn):
   stats['precision'] = stats['precision'][notnan_idxs]
   stats['recall'] = stats['recall'][notnan_idxs]
   assert len(stats['precision']) == len(stats['recall'])
-  print(statsfn, 'has', oldlen - len(stats['precision']), 'nan')
+  #print(statsfn, 'has', oldlen - len(stats['precision']), 'nan')
 
   stats['nonsv_ratio'] = (stats['fp'] + 1) / (stats['num_sv_away_from_cents_and_telos'] + 1)
   assert np.count_nonzero(np.isnan(stats['nonsv_ratio'])) == 0
@@ -124,7 +124,7 @@ def plot_method_combos(statsfns):
     'method_combos_perf.html',
   )
 
-def plot_ecdfs(statsfns):
+def plot_ecdfs(run_label, statsfns):
   traces = {
     'precision': [],
     'recall': [],
@@ -134,12 +134,13 @@ def plot_ecdfs(statsfns):
 
   for statsfn in statsfns:
     run = os.path.basename(statsfn).split('.')[1]
+    print(statsfn, run)
     stats, labels = parse_stats(statsfn)
 
     for plot in traces.keys():
       X, Y, L = cdf(stats[plot], labels[plot])
 
-      if run.startswith('any'):
+      if run_label == 'consensus_methods':
         line = {'width': 4}
       else:
         line = {'dash': 'dot', 'width': 4}
@@ -152,33 +153,33 @@ def plot_ecdfs(statsfns):
         name = '%s (%s values)' % (run, len(L)),
         line = line,
         # Comma corresponds to "Y_dkfz,jabba", which uses both (along with SVs).
-        visible = (('any' in run or ',' in run) and True or 'legendonly'),
+        #visible = (('any' in run or ',' in run) and True or 'legendonly'),
       ))
 
-  for T in traces['numbp']:
-    if T['name'].startswith('any'):
-      T['visible'] = False
+  #for T in traces['numbp']:
+  #  if T['name'].startswith('any'):
+  #    T['visible'] = False
 
   scatter(
     traces['precision'],
     'Precision ECDF',
     'Precision',
     'ECDF(x)',
-    'precision_ecdf.html',
+    'precision_ecdf.%s.html' % run_label,
   )
   scatter(
     traces['recall'],
     'Recall ECDF',
     'Recall',
     'ECDF(x)',
-    'recall_ecdf.html',
+    'recall_ecdf.%s.html' % run_label,
   )
   scatter(
     traces['numbp'],
     '# BPs ECDF',
     '# BPs',
     'ECDF(x)',
-    'numbp_ecdf.html',
+    'numbp_ecdf.%s.html' % run_label,
     logx = True,
     #xmin = 1.9,
     #xmax = 4,
@@ -188,13 +189,15 @@ def plot_ecdfs(statsfns):
     'Non-SV ratio ECDF',
     'log2((# non-SV BPs + 1) / (# SVs + 1))',
     'ECDF(x)',
-    'nonsv_ratio_ecdf.html',
+    'nonsv_ratio_ecdf.%s.html' % run_label,
     xmin = -10,
     xmax = 10,
   )
 
 def main():
-  plot_method_combos(sys.argv[1:])
-  plot_ecdfs(sys.argv[1:])
+  run_label = sys.argv[1]
+  assert run_label in ('consensus_methods', 'indiv_methods')
+  plot_method_combos(sys.argv[2:])
+  plot_ecdfs(run_label, sys.argv[2:])
 
 main()
