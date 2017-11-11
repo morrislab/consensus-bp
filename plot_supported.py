@@ -9,7 +9,7 @@ import numpy as np
 import scipy.stats
 
 def scatter(title, xtitle, ytitle, X, Y, L, outfn, logx = False, xmin = None, xmax = None,):
-  print(title, np.mean(Y), np.std(Y), np.percentile(Y, [25, 50, 75]))
+  print(title, len(X), np.mean(Y), np.std(Y), np.percentile(Y, [25, 50, 75]))
   if logx:
     XY = np.vstack((np.log(X), Y))
   else:

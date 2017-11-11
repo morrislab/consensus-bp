@@ -131,6 +131,13 @@ def plot_ecdfs(run_label, statsfns):
     'numbp': [],
     'nonsv_ratio': [],
   }
+  vals = {
+    'precision': {},
+    'recall': {},
+    'numbp': {},
+    'nonsv_ratio': {},
+  }
+
 
   for statsfn in statsfns:
     run = os.path.basename(statsfn).split('.')[1]
@@ -138,6 +145,8 @@ def plot_ecdfs(run_label, statsfns):
     stats, labels = parse_stats(statsfn)
 
     for plot in traces.keys():
+      # Record vals so that we can examine them in IPython if we wish.
+      vals[plot][run] = stats[plot]
       X, Y, L = cdf(stats[plot], labels[plot])
 
       if run_label == 'consensus_methods':
