@@ -14,7 +14,7 @@ methods="broad dkfz jabba mustonen095 peifer vanloo_wedge_segs"
 PARALLEL=40
 
 function create {
-  mkdir -p $OUTDIR && rm -rf $OUTDIR/methods.*
+  mkdir -p $OUTDIR && rm -rf $OUTDIR/methods.* $OUTDIR/bp.*
 
   cd ~/work/exultant-pistachio/data/cnvs.pre_consensus_bp
 
@@ -26,7 +26,12 @@ function create {
     $SVDIR \
     $OUTDIR \
     $methods \
-    | parallel -j$PARALLEL
+    | parallel -j$PARALLEL --halt 1
+
+  cd $OUTDIR
+  for foo in bp.*; do
+    mv $foo $(echo $foo | sed 's/^bp/methods/')
+  done
 }
 
 function evaluate {
@@ -39,13 +44,14 @@ function evaluate {
       "$CENTROMERES" \
       "$run"/'*-*.json' \
       "> $PLOTDIR/stats.$runtype.txt"
-  done | parallel -j$PARALLEL
+  done | parallel -j$PARALLEL --halt 1
 }
 
 function plot {
   cd $PLOTDIR
   python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/plot_verification.py "consensus_methods" stats.any*.txt
   python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/plot_verification.py "indiv_methods" $(ls stats*txt | grep -v "^stats.any")
+  python2 ~/work/exultant-pistachio/protocols/compare-breakpoints/plot_supported.py stats.any3_any2_conservative.txt
 }
 
 function main {
