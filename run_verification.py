@@ -65,6 +65,16 @@ def run_any_N(guid, methods_for_guid, window_size, centromere_fn, sv_dir, base_o
   print_safely(cmd)
 
 def run_autosome_strats(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir):
+  run_custom(
+    guid,
+    methods_for_guid,
+    window_size,
+    centromere_fn,
+    sv_dir,
+    out_dir,
+    lambda num_active, active_methods: False,
+    'just_sv'
+  )
   run_individual_methods(guid, methods_for_guid, window_size, centromere_fn, sv_dir, out_dir)
 
   for exclude in (tuple(), ('dkfz',), ('peifer',), ('dkfz', 'peifer')):

@@ -79,38 +79,38 @@ def plot(cnvfn):
   print('Discarded %s vals from bp_indices' % (len(sampids) - np.sum(bp_indices)))
 
   scatter(
-    title = 'Support of SVs by consensus BPs',
+    title = 'Support of SVs by consensus BPs for %s cancers' % len(num_sv[sv_indices]),
     xtitle = 'Number of SVs',
     ytitle = 'Fraction of SVs with associated consensus BP',
     X = num_sv[sv_indices],
     Y = frac_sv_supported_by_cbps[sv_indices],
     L = [S for S, use_S in zip(sampids, sv_indices) if use_S is True],
-    outfn = 'scatter.sv.html',
+    outfn = 'sv_bp_support.scatter.html',
     logx = True,
   )
   scatter(
-    title = 'Support of consensus BPs by SVs',
+    title = 'Support of consensus BPs by SVs for %s cancers' % len(num_bp[bp_indices]),
     xtitle = 'Number of BPs',
-    ytitle = 'Fraction of BPs with associated consensus SV',
+    ytitle = 'Fraction of consensus BPs with associated SV',
     X = num_bp[bp_indices],
     Y = frac_cbp_supported_by_svs[bp_indices],
     L = [S for S, use_S in zip(sampids, bp_indices) if use_S is True],
-    outfn = 'scatter.bp.html',
+    outfn = 'bp_sv_support.scatter.html',
     logx = True,
   )
 
   pie(
-    title = 'Support of consensus SVs by BPs',
+    title = 'Support of SVs by consensus BPs',
     values = [np.sum(vals['num_bp_replaced_by_sv']), np.sum(vals['num_lone_sv'])],
     labels = ['SVs supported by consensus BP', 'SVs not supported by consensus BP'],
-    outfn = 'pie.sv.html',
+    outfn = 'sv_bp_support.pie.html',
   )
 
   pie(
     title = 'Support of consensus BPs by SVs',
     values = [np.sum(vals['num_bp_replaced_by_sv']), np.sum(vals['num_bp_away_from_cents_and_telos']) - np.sum(vals['num_bp_replaced_by_sv'])],
     labels = ['Consensus BPs supported by SV', 'Consensus BPs not supported by SV'],
-    outfn = 'pie.bp.html',
+    outfn = 'bp_sv_support.pie.html',
   )
 
 def main():

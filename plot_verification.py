@@ -149,7 +149,7 @@ def plot_ecdfs(run_label, statsfns):
       vals[plot][run] = stats[plot]
       X, Y, L = cdf(stats[plot], labels[plot])
 
-      if run_label == 'consensus_methods':
+      if True or run_label == 'consensus_methods':
         line = {'width': 4}
       else:
         line = {'dash': 'dot', 'width': 4}
