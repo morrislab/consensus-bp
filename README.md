@@ -31,9 +31,10 @@ Running the pipeline
 
 4. Change directories to `$BASEDIR`. Extract `consensus_bp_data.20171111.tar.gz` to create the subdirectory `data/`.
 
-    cd ~/consensus_bp
-    tar xzf ~/Downloads/consensus_bp_data.20171111.tar.gz
-
+```
+cd ~/consensus_bp
+tar xzf ~/Downloads/consensus_bp_data.20171111.tar.gz
+```
 
 5. Run `bash run.sh`.
 
