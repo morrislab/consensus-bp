@@ -1,4 +1,4 @@
-ICGC PCAWG-11 consensus breakpiont (segmentation) pipeline
+ICGC PCAWG-11 consensus breakpoint (segmentation) pipeline
 ==========================================================
 
 General procedure
@@ -9,7 +9,7 @@ consisting of breakpoints that denote where in the genome copy number status
 changes for each patient.
 
 Independent processes are run for each sample, permitting the pipeline to be
-parallelized to decreate execution time. IO speed affects runtime because the
+parallelized to decrease execution time. IO speed affects runtime because the
 pipeline writes several thousand files to disk. On a 20-core Xeon E5-2630 with
 128 GB of RAM and a fast SSD, the pipeline finishes in approximately five
 minutes.
