@@ -1,11 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-#export LC_ALL=C
-#module load gnu-parallel/20150822
-
-BASEDIR=~/work/exultant-pistachio
-PROTDIR=$BASEDIR/protocols/compare-breakpoints
+BASEDIR=~/consensus_bp
+PROTDIR=$(dirname "$(readlink -f "$0")")
 
 SVDIR=$BASEDIR/data/sv
 WHITELIST=$BASEDIR/data/misc/whitelist.20160831.txt
@@ -16,10 +13,10 @@ WINDOW_SIZE=100000
 INPUT_SEGS=$BASEDIR/data/cnvs.pre_consensus_bp
 
 PARALLEL=40
-OUTDIR=$BASEDIR/data/consensus_bp
+OUTDIR=$BASEDIR/results
 MERGEDDIR=$OUTDIR/bp.merged
-releaseid=$(date '+%Y%m%d')
-sample_list=$BASEDIR/data/archives/consensus_bp_methods.$releaseid.txt
+ARCHIVEDIR=$OUTDIR/archives
+RELEASEID=$(date '+%Y%m%d')
 
 METHODS_AUTOSOMES="broad dkfz jabba mustonen095 peifer vanloo_wedge_segs"
 METHODS_X_MALE="broad_x dkfz jabba mustonen095 peifer"
@@ -27,7 +24,7 @@ METHODS_X_FEMALE="broad_x dkfz jabba mustonen095 peifer vanloo_wedge_segs"
 METHODS_Y="dkfz jabba"
 
 function make_consensus {
-  rm -rf $OUTDIR && mkdir -p $OUTDIR
+  rm -rf $OUTDIR && mkdir -p $OUTDIR $
 
   cd $INPUT_SEGS
   (
@@ -71,19 +68,22 @@ function make_consensus {
     $SVDIR \
     $OUTDIR \
     $METHODS_Y
-  ) | parallel -j$PARALLEL --joblog $BASEDIR/data/tmp/jobs.log --halt 1
+  ) | parallel -j$PARALLEL --joblog $OUTDIR/jobs.log --halt 1
 }
 
 function merge_releases {
+  sample_list=$ARCHIVEDIR/consensus_bp_methods.$RELEASEID.txt
+  mkdir -p $ARCHIVEDIR
   cd $OUTDIR
   rm -rf $MERGEDDIR && python2 $PROTDIR/merge_releases.py $SEX bp.merged bp.{autosomes,X_female,X_male,Y} > $sample_list
 }
 
 function package_release {
+  mkdir -p $ARCHIVEDIR
   cd $MERGEDDIR
-  #tar czf $BASEDIR/data/archives/consensus_bp.basic.$releaseid.tar.gz *-*.txt --transform "s|^|consensus_bp.basic.$releaseid/|"
+  tar czf $ARCHIVEDIR/consensus_bp.basic.$RELEASEID.tar.gz *-*.txt --transform "s|^|consensus_bp.basic.$RELEASEID/|"
   cd ..
-  tar czf $BASEDIR/data/archives/consensus_bp.extended.$releaseid.tar.gz bp.*/*-*.{json,stderr} --transform "s|^|consensus_bp.extended.$releaseid/|"
+  tar czf $ARCHIVEDIR/consensus_bp.extended.$RELEASEID.tar.gz bp.*/*-*.{json,stderr} --transform "s|^|consensus_bp.extended.$RELEASEID/|"
 }
 
 function main {
@@ -100,7 +100,7 @@ function main {
   cd ~/work/bp-witness
   rm -f data/index.json
   python2 index_data.py $OUTDIR
-  tar czf $BASEDIR/data/archives/bp_witness.$releaseid.tar.gz css index* js README.txt data/*.json --transform "s|^|bp-witness/|"
+  tar czf $ARCHIVEDIR/bp_witness.$RELEASEID.tar.gz css index* js README.txt data/*.json --transform "s|^|bp-witness/|"
 }
 
 main
